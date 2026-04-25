@@ -4,13 +4,12 @@ const admin = require('firebase-admin');
 
 let credential;
 
-if (process.env.FIREBASE_PRIVATE_KEY) {
-  // Railway 환경
-  credential = admin.credential.cert({
-    projectId:   process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  });
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  // Railway 환경 — base64 디코딩
+  const serviceAccount = JSON.parse(
+    Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf8')
+  );
+  credential = admin.credential.cert(serviceAccount);
 } else {
   // 로컬 환경
   const serviceAccount = require('../serviceAccountKey.json');
