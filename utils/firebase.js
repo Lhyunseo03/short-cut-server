@@ -14,6 +14,8 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 
   console.log('[DEBUG] project_id:', serviceAccount.project_id);
   console.log('[DEBUG] client_email:', serviceAccount.client_email);
+  console.log('[DEBUG] private_key valid:', serviceAccount.private_key?.startsWith('-----BEGIN RSA PRIVATE KEY-----') || serviceAccount.private_key?.startsWith('-----BEGIN PRIVATE KEY-----'));
+  console.log('[DEBUG] has newlines:', serviceAccount.private_key?.includes('\n'));
   credential = admin.credential.cert(serviceAccount);
 } else {
   // 로컬 환경
