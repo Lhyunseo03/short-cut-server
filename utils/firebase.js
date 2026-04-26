@@ -5,6 +5,8 @@ const admin = require('firebase-admin');
 let credential;
 
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.log('[DEBUG] SA prefix:', process.env.FIREBASE_SERVICE_ACCOUNT?.substring(0, 30));
+
   // Railway 환경 — base64 디코딩
   const serviceAccount = JSON.parse(
     Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf8')
