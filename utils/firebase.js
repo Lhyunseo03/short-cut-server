@@ -11,6 +11,9 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   const serviceAccount = JSON.parse(
     Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf8')
   );
+
+  console.log('[DEBUG] project_id:', serviceAccount.project_id);
+  console.log('[DEBUG] client_email:', serviceAccount.client_email);
   credential = admin.credential.cert(serviceAccount);
 } else {
   // 로컬 환경
