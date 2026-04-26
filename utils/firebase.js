@@ -26,7 +26,11 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 //임시 로그 - railway에서 firebase_service_account 환경변수가 실제로 인식되는지 확인 
 //console.log('ENV CHECK:', !!process.env.FIREBASE_SERVICE_ACCOUNT);
 
-admin.initializeApp({ credential });
+//fix: Firebase projectId 명시
+admin.initializeApp({ 
+  credential,
+  projectId: serviceAccount.project_id  // ← 추가
+});
 
 const db = admin.firestore();
 
