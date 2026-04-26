@@ -28,10 +28,17 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 //console.log('ENV CHECK:', !!process.env.FIREBASE_SERVICE_ACCOUNT);
 
 //fix: Firebase projectId 명시
-admin.initializeApp({ 
-  credential,
-  projectId: serviceAccount.project_id  // ← 추가
-});
+
+//debug: Firebase 초기화 에러 로그 추가
+try {
+  admin.initializeApp({ 
+    credential,
+    projectId: serviceAccount.project_id
+  });
+  console.log('[DEBUG] Firebase 초기화 성공');
+} catch (e) {
+  console.error('[DEBUG] Firebase 초기화 실패:', e.message);
+}
 
 const db = admin.firestore();
 
