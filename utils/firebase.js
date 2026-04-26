@@ -3,12 +3,13 @@
 const admin = require('firebase-admin');
 
 let credential;
+let serviceAccount;  // ← 밖으로 꺼내기
 
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   console.log('[DEBUG] SA prefix:', process.env.FIREBASE_SERVICE_ACCOUNT?.substring(0, 30));
 
   // Railway 환경 — base64 디코딩
-  const serviceAccount = JSON.parse(
+  serviceAccount = JSON.parse(
     Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf8')
   );
 
@@ -19,7 +20,7 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   credential = admin.credential.cert(serviceAccount);
 } else {
   // 로컬 환경
-  const serviceAccount = require('../serviceAccountKey.json');
+  serviceAccount = require('../serviceAccountKey.json');
   credential = admin.credential.cert(serviceAccount);
 }
 
