@@ -12,5 +12,11 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 }
 
 admin.initializeApp({ credential });
+
+// 토큰 발급 테스트
+admin.app().options.credential.getAccessToken()
+  .then(token => console.log('[DEBUG] 토큰 발급 성공:', token.expirationTime))
+  .catch(err => console.error('[DEBUG] 토큰 발급 실패:', err.message));
+
 const db = admin.firestore();
 module.exports = { db };
