@@ -16,6 +16,7 @@ app.use(express.json());
 
 // 헬스체크 — Android 앱이나 CI에서 서버 살아있는지 확인용
 app.get('/health', (_req, res) => {
+  logger.info('헬스체크 요청 받음');
   res.json({ status: 'ok', uptime: process.uptime(), time: Date.now() });
 });
 
@@ -49,6 +50,7 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 const { db } = require('./utils/firebase');
 
 // user별 조회 — GET /logs/:userId
+// 특정 유저의 최근 50개 로그 반환 
 app.get('/logs/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -67,6 +69,7 @@ app.get('/logs/:userId', async (req, res) => {
 });
 
 // 시간 범위 조회 — GET /logs/:userId?start=1700000000000&end=1700999999999
+// 시작시간, 끝시간 사이 로그만 반환 
 app.get('/logs/:userId/range', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -82,6 +85,43 @@ app.get('/logs/:userId/range', async (req, res) => {
     res.json({ userId, count: logs.length, logs });
   } catch (err) {
     logger.error(`logs 범위 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// violation_event 수신 — POST /violations
+app.post('/violations', async (req, res) => {
+  try {
+    const { userId, timestamp, limitType, scrollCount, action } = req.body;
+
+    // 필수 필드 검증
+    if (!userId || !timestamp || !limitType || scrollCount === undefined) {
+      return res.status(400).json({ error: '필수 필드 누락' });
+    }
+
+    if (!['hourly', 'daily'].includes(limitType)) {
+      return res.status(400).json({ error: 'limitType은 hourly 또는 daily여야 합니다' });
+    }
+
+    if (!['stop', 'ignore'].includes(action)) {
+      return res.status(400).json({ error: 'action은 stop 또는 ignore여야 합니다' });
+    } 
+
+    // Firestore 저장
+    await db.collection('violations').add({
+      userId,
+      timestamp,
+      limitType,
+      scrollCount,
+      action,
+      createdAt: Date.now(),
+    });
+
+    logger.success(`violation 저장 완료 — userId: ${userId}, limitType: ${limitType}`);
+    res.json({ status: 'ok' });
+
+  } catch (err) {
+    logger.error(`violation 저장 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
