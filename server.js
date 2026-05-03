@@ -113,8 +113,7 @@ app.post('/violations', async (req, res) => {
       timestamp,
       limitType,
       scrollCount,
-      action,
-      createdAt: Date.now(),
+      action
     });
 
     logger.success(`violation 저장 완료 — userId: ${userId}, limitType: ${limitType}`);
