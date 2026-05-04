@@ -125,6 +125,60 @@ app.post('/violations', async (req, res) => {
   }
 });
 
+// limit 설정 저장 — POST /limits/:userId
+app.post('/limits/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params; // 주소에서 변수 꺼내서 userId에 저장 
+    const { hourlyLimit, dailyLimit } = req.body;
+
+    if (hourlyLimit === undefined || dailyLimit === undefined) {
+      return res.status(400).json({ error: '필수 필드 누락' });
+    }
+
+    if (typeof hourlyLimit !== 'number' || typeof dailyLimit !== 'number') {
+      return res.status(400).json({ error: 'hourlyLimit, dailyLimit은 숫자여야 합니다' });
+    }
+
+    //firebase 에 저장
+    await db.collection('limits').doc(userId).set({
+      userId,
+      hourlyLimit,
+      dailyLimit,
+      updatedAt: Date.now(),
+    });
+
+    logger.success(`limit 저장 완료 — userId: ${userId}`);
+    res.json({ status: 'ok' });
+
+  } catch (err) {
+    logger.error(`limit 저장 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// limit 조회 — GET /limits/:userId
+app.get('/limits/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const doc = await db.collection('limits').doc(userId).get();
+
+    if (!doc.exists) {
+      return res.json({
+        userId,
+        hourlyLimit: 50,
+        dailyLimit: 100,
+      }); // 기본값 반환
+    }
+
+    res.json({ userId, ...doc.data() }); // userid랑 doc에 있는 data 합쳐서 넣음
+
+  } catch (err) {
+    logger.error(`limit 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 예외 처리 ──────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
   logger.error('uncaughtException:', err.message);
