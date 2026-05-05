@@ -125,6 +125,111 @@ app.post('/violations', async (req, res) => {
   }
 });
 
+// 일간 통계 — GET /stats/:userId/daily?date=2026-05-03
+app.get('/stats/:userId/daily', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
+    }
+
+    // 하루 시작/끝 시각 계산
+    const startOfDay = new Date(date + 'T00:00:00.000Z').getTime();
+    const endOfDay   = new Date(date + 'T23:59:59.999Z').getTime();
+
+    // limit 가져오기 (없으면 기본값)
+    const limitsDoc = await db.collection('limits').doc(userId).get();
+    const limits = limitsDoc.exists
+      ? limitsDoc.data()
+      : { hourlyLimit: 50, dailyLimit: 100 };
+
+    // 그날 스크롤 로그 가져오기
+    const logsSnapshot = await db.collection('userLogs')
+      .where('userId', '==', userId)
+      .where('timestamp', '>=', startOfDay)
+      .where('timestamp', '<=', endOfDay)
+      .orderBy('timestamp', 'asc')
+      .get();
+
+    const logs = logsSnapshot.docs.map(doc => doc.data());
+
+    // 총 스크롤 횟수
+    const totalScroll = logs.length;
+
+    // 시간대별 그래프
+    const hourlyGraph = Array.from({ length: 24 }, (_, i) => ({ hour: i, scrollCount: 0, exceeded: false }));
+    logs.forEach(log => {
+      const hour = new Date(log.timestamp).getHours();
+      hourlyGraph[hour].scrollCount++;
+    });
+
+    // 그날 violation 가져오기
+    const violationsSnapshot = await db.collection('violations')
+      .where('userId', '==', userId)
+      .where('timestamp', '>=', startOfDay)
+      .where('timestamp', '<=', endOfDay)
+      .orderBy('timestamp', 'asc')
+      .get();
+
+    const violations = violationsSnapshot.docs.map(doc => doc.data());
+
+    // daily violation
+    const dailyViolationEntry = violations.find(v => v.limitType === 'daily');
+    const dailyViolation      = !!dailyViolationEntry;
+    const dailyViolationTime  = dailyViolationEntry
+      ? new Date(dailyViolationEntry.timestamp).toISOString()
+      : null;
+
+    // hourly violation 목록
+    const hourlyViolations = violations
+      .filter(v => v.limitType === 'hourly')
+      .map(v => ({
+        time:            new Date(v.timestamp).toISOString(),
+        recentHourCount: v.scrollCount,
+        hourlyLimit:     limits.hourlyLimit,
+      }));
+
+    // hourlyGraph에 exceeded 표시
+    hourlyViolations.forEach(v => {
+      const hour = new Date(v.time).getHours();
+      hourlyGraph[hour].exceeded = true;
+    });
+
+    // peakHour — recentHourCount / hourlyLimit 비율이 가장 높은 시각
+    const peakHour = hourlyViolations.reduce(
+      (max, v) =>
+        (v.recentHourCount / v.hourlyLimit) > ((max?.recentHourCount / max?.hourlyLimit) || 0)
+          ? v : max,
+      null
+    );
+
+    // stop / ignore 횟수
+    const stopCount   = violations.filter(v => v.action === 'stop').length;
+    const ignoreCount = violations.filter(v => v.action === 'ignore').length;
+
+    res.json({
+      userId,
+      date,
+      totalScroll,
+      dailyLimit:          limits.dailyLimit,
+      dailyViolation,
+      dailyViolationTime,
+      hourlyLimitExceeded: hourlyViolations.length > 0,
+      hourlyViolations,
+      stopCount,
+      ignoreCount,
+      peakHour,
+      hourlyGraph:         hourlyGraph.filter(h => h.scrollCount > 0),
+    });
+
+  } catch (err) {
+    logger.error(`daily stats 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // limit 설정 저장 — POST /limits/:userId
 app.post('/limits/:userId', async (req, res) => {
   try {
