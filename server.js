@@ -330,6 +330,75 @@ app.post('/limits/:userId', async (req, res) => {
   }
 });
 
+// 월간 통계 — GET /stats/:userId/monthly?date=2026-05
+app.get('/stats/:userId/monthly', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { date } = req.query; // "2026-05"
+
+    if (!date) {
+      return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
+    }
+
+    // 이번 달 시작/끝 계산
+    const startOfMonth = new Date(date + '-01T00:00:00.000Z').getTime();
+    const today = new Date();
+    const endOfMonth = new Date(
+      today.getUTCFullYear() === parseInt(date.slice(0, 4)) &&
+      today.getUTCMonth() + 1 === parseInt(date.slice(5, 7))
+        ? today.toISOString().slice(0, 10) + 'T23:59:59.999Z'
+        : date + '-' + new Date(parseInt(date.slice(0, 4)), parseInt(date.slice(5, 7)), 0).getDate() + 'T23:59:59.999Z'
+    ).getTime();
+
+    // 지난 일수 계산
+    const daysPassed = Math.ceil((endOfMonth - startOfMonth) / (1000 * 60 * 60 * 24));
+
+    // 스크롤 로그 가져오기
+    const logsSnapshot = await db.collection('userLogs')
+      .where('userId', '==', userId)
+      .where('timestamp', '>=', startOfMonth)
+      .where('timestamp', '<=', endOfMonth)
+      .orderBy('timestamp', 'asc')
+      .get();
+
+    const logs = logsSnapshot.docs.map(doc => doc.data());
+
+    // 총 스크롤 횟수
+    const totalScroll = logs.length;
+
+    // 하루 평균
+    const avgScrollPerDay = Math.round(totalScroll / daysPassed);
+
+    // 날짜별 스크롤 횟수
+    const dailyMap = {};
+    logs.forEach(log => {
+      const d = new Date(log.timestamp).toISOString().slice(0, 10);
+      dailyMap[d] = (dailyMap[d] || 0) + 1;
+    });
+
+    // 가장 많이 본 날
+    const peakDay = Object.entries(dailyMap).reduce(
+      (max, [date, count]) => count > (max?.scrollCount || 0)
+        ? { date, scrollCount: count }
+        : max,
+      null
+    );
+
+    res.json({
+      userId,
+      month: date,
+      totalScroll,
+      avgScrollPerDay,
+      daysPassed,
+      peakDay,
+    });
+
+  } catch (err) {
+    logger.error(`monthly stats 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // limit 조회 — GET /limits/:userId
 app.get('/limits/:userId', async (req, res) => {
   try {
