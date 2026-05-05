@@ -230,6 +230,75 @@ app.get('/stats/:userId/daily', async (req, res) => {
   }
 });
 
+// 주간 통계 — GET /stats/:userId/weekly?date=2026-05-03
+app.get('/stats/:userId/weekly', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
+    }
+
+    // 이번 주 월요일 ~ 오늘 계산
+    const today = new Date(date + 'T00:00:00.000Z');
+    const dayOfWeek = today.getUTCDay(); // 0=일, 1=월, ..., 6=토
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+    const weekStart = new Date(today);
+    weekStart.setUTCDate(today.getUTCDate() - daysFromMonday);
+
+    const startTs = weekStart.getTime();
+    const endTs   = new Date(date + 'T23:59:59.999Z').getTime();
+    const daysPassed = daysFromMonday + 1; // 월요일 포함
+
+    // 스크롤 로그 가져오기
+    const logsSnapshot = await db.collection('userLogs')
+      .where('userId', '==', userId)
+      .where('timestamp', '>=', startTs)
+      .where('timestamp', '<=', endTs)
+      .orderBy('timestamp', 'asc')
+      .get();
+
+    const logs = logsSnapshot.docs.map(doc => doc.data());
+
+    // 총 스크롤 횟수
+    const totalScroll = logs.length;
+
+    // 하루 평균
+    const avgScrollPerDay = Math.round(totalScroll / daysPassed);
+
+    // 날짜별 스크롤 횟수
+    const dailyMap = {};
+    logs.forEach(log => {
+      const d = new Date(log.timestamp).toISOString().slice(0, 10);
+      dailyMap[d] = (dailyMap[d] || 0) + 1;
+    });
+
+    // 가장 많이 본 날
+    const peakDay = Object.entries(dailyMap).reduce(
+      (max, [date, count]) => count > (max?.scrollCount || 0)
+        ? { date, scrollCount: count }
+        : max,
+      null
+    );
+
+    res.json({
+      userId,
+      weekStart: weekStart.toISOString().slice(0, 10),
+      weekEnd:   date,
+      totalScroll,
+      avgScrollPerDay,
+      daysPassed,
+      peakDay,
+    });
+
+  } catch (err) {
+    logger.error(`weekly stats 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // limit 설정 저장 — POST /limits/:userId
 app.post('/limits/:userId', async (req, res) => {
   try {
