@@ -49,6 +49,37 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 // ── 조회 API ───────────────────────────────────────────────
 const { db } = require('./utils/firebase');
 
+// 스크롤 배치 저장 — POST /userlogs
+// Android에서 10개 누적 or 5분마다 배치 전송
+app.post('/userlogs', async (req, res) => {
+  try {
+    const { userId, timestamp, scrollCount } = req.body;
+
+    // 필수 필드 검증
+    if (!userId || !timestamp || scrollCount === undefined) {
+      return res.status(400).json({ error: '필수 필드 누락' });
+    }
+
+    if (typeof scrollCount !== 'number' || scrollCount <= 0) {
+      return res.status(400).json({ error: 'scrollCount는 양수여야 합니다' });
+    }
+
+    // Firestore 저장
+    await db.collection('userLogs').add({
+      userId,
+      timestamp,
+      scrollCount,
+    });
+
+    logger.success(`userLog 저장 완료 — userId: ${userId}, scrollCount: ${scrollCount}`);
+    res.json({ status: 'ok' });
+
+  } catch (err) {
+    logger.error(`userLog 저장 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // user별 조회 — GET /logs/:userId
 // 특정 유저의 최근 50개 로그 반환 
 app.get('/logs/:userId', async (req, res) => {
@@ -156,13 +187,13 @@ app.get('/stats/:userId/daily', async (req, res) => {
     const logs = logsSnapshot.docs.map(doc => doc.data());
 
     // 총 스크롤 횟수
-    const totalScroll = logs.length;
-
+    const totalScroll = logs.reduce((sum, log) => sum + log.scrollCount, 0);
+    
     // 시간대별 그래프
     const hourlyGraph = Array.from({ length: 24 }, (_, i) => ({ hour: i, scrollCount: 0, exceeded: false }));
     logs.forEach(log => {
       const hour = new Date(log.timestamp).getHours();
-      hourlyGraph[hour].scrollCount++;
+      hourlyGraph[hour].scrollCount += (log.scrollCount);
     });
 
     // 그날 violation 가져오기
@@ -263,7 +294,8 @@ app.get('/stats/:userId/weekly', async (req, res) => {
     const logs = logsSnapshot.docs.map(doc => doc.data());
 
     // 총 스크롤 횟수
-    const totalScroll = logs.length;
+    const totalScroll = logs.reduce((sum, log) => sum + log.scrollCount, 0);
+
 
     // 하루 평균
     const avgScrollPerDay = Math.round(totalScroll / daysPassed);
@@ -272,8 +304,9 @@ app.get('/stats/:userId/weekly', async (req, res) => {
     const dailyMap = {};
     logs.forEach(log => {
       const d = new Date(log.timestamp).toISOString().slice(0, 10);
-      dailyMap[d] = (dailyMap[d] || 0) + 1;
+      dailyMap[d] = (dailyMap[d] || 0) + (log.scrollCount);
     });
+
 
     // 가장 많이 본 날
     const peakDay = Object.entries(dailyMap).reduce(
@@ -364,7 +397,7 @@ app.get('/stats/:userId/monthly', async (req, res) => {
     const logs = logsSnapshot.docs.map(doc => doc.data());
 
     // 총 스크롤 횟수
-    const totalScroll = logs.length;
+    const totalScroll = logs.reduce((sum, log) => sum + log.scrollCount, 0);
 
     // 하루 평균
     const avgScrollPerDay = Math.round(totalScroll / daysPassed);
@@ -373,7 +406,7 @@ app.get('/stats/:userId/monthly', async (req, res) => {
     const dailyMap = {};
     logs.forEach(log => {
       const d = new Date(log.timestamp).toISOString().slice(0, 10);
-      dailyMap[d] = (dailyMap[d] || 0) + 1;
+      dailyMap[d] = (dailyMap[d] || 0) + (log.scrollCount);
     });
 
     // 가장 많이 본 날
