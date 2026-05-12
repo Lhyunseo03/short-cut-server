@@ -48,10 +48,12 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 
 // ── 조회 API ───────────────────────────────────────────────
 const { db } = require('./utils/firebase');
+// Firebase Auth 토큰 검증 미들웨어 import
+const { verifyToken } = require('./middleware/auth');
 
 // 스크롤 배치 저장 — POST /userlogs
 // Android에서 10개 누적 or 5분마다 배치 전송
-app.post('/userlogs', async (req, res) => {
+app.post('/userlogs', verifyToken, async (req, res) => {
   try {
     const { userId, timestamp, scrollCount } = req.body;
 
@@ -121,7 +123,7 @@ app.get('/logs/:userId/range', async (req, res) => {
 });
 
 // violation_event 수신 — POST /violations
-app.post('/violations', async (req, res) => {
+app.post('/violations', verifyToken, async (req, res) => {
   try {
     const { userId, timestamp, limitType, scrollCount, action } = req.body;
 
@@ -157,7 +159,7 @@ app.post('/violations', async (req, res) => {
 });
 
 // 일간 통계 — GET /stats/:userId/daily?date=2026-05-03
-app.get('/stats/:userId/daily', async (req, res) => {
+app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query;
@@ -262,7 +264,7 @@ app.get('/stats/:userId/daily', async (req, res) => {
 });
 
 // 주간 통계 — GET /stats/:userId/weekly?date=2026-05-03
-app.get('/stats/:userId/weekly', async (req, res) => {
+app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query;
@@ -333,7 +335,7 @@ app.get('/stats/:userId/weekly', async (req, res) => {
 });
 
 // limit 설정 저장 — POST /limits/:userId
-app.post('/limits/:userId', async (req, res) => {
+app.post('/limits/:userId', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params; // 주소에서 변수 꺼내서 userId에 저장 
     const { hourlyLimit, dailyLimit } = req.body;
@@ -364,7 +366,7 @@ app.post('/limits/:userId', async (req, res) => {
 });
 
 // 월간 통계 — GET /stats/:userId/monthly?date=2026-05
-app.get('/stats/:userId/monthly', async (req, res) => {
+app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query; // "2026-05"
@@ -433,7 +435,7 @@ app.get('/stats/:userId/monthly', async (req, res) => {
 });
 
 // limit 조회 — GET /limits/:userId
-app.get('/limits/:userId', async (req, res) => {
+app.get('/limits/:userId', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
 

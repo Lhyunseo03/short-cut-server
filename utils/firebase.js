@@ -9,4 +9,5 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
-module.exports = { db };
+//admin을 firebase.js 밖으로 꺼내서 다른 파일에서 쓸 수 있음 
+module.exports = { db, admin };
