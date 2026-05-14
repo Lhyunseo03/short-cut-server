@@ -457,6 +457,57 @@ app.get('/limits/:userId', verifyToken, async (req, res) => {
   }
 });
 
+// 회원 탈퇴 — DELETE /users/:userId
+// 유저의 Firestore 데이터 전체 삭제 + Firebase Auth 계정 삭제
+// 본인 계정만 탈퇴 가능 (토큰의 uid와 요청 userId 일치 여부 확인)
+app.delete('/users/:userId', verifyToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // 토큰에서 추출한 uid와 요청한 userId 비교
+    // 다른 유저의 계정을 삭제하는 것을 방지
+    if (req.userId !== userId) {
+      return res.status(403).json({ error: '본인 계정만 탈퇴할 수 있습니다' });
+    }
+
+    // Firestore — userLogs 컬렉션에서 해당 유저 문서 전체 삭제
+    // 스크롤 통계 데이터 삭제
+    const userLogsSnapshot = await db.collection('userLogs')
+      .where('userId', '==', userId)
+      .get();
+    const deleteUserLogs = userLogsSnapshot.docs.map(doc => doc.ref.delete());
+    await Promise.all(deleteUserLogs); // 병렬 삭제로 속도 최적화
+    logger.info(`userLogs 삭제 완료 — userId: ${userId}`);
+
+    // Firestore — violations 컬렉션에서 해당 유저 문서 전체 삭제
+    // 한도 초과 위반 기록 삭제
+    const violationsSnapshot = await db.collection('violations')
+      .where('userId', '==', userId)
+      .get();
+    const deleteViolations = violationsSnapshot.docs.map(doc => doc.ref.delete());
+    await Promise.all(deleteViolations); // 병렬 삭제로 속도 최적화
+    logger.info(`violations 삭제 완료 — userId: ${userId}`);
+
+    // Firestore — limits 문서 삭제
+    // hourly/daily limit 설정 삭제
+    await db.collection('limits').doc(userId).delete();
+    logger.info(`limits 삭제 완료 — userId: ${userId}`);
+
+    // Firebase Auth — 계정 삭제
+    // 삭제 후 해당 계정으로 로그인 불가능
+    const { admin } = require('./utils/firebase');
+    await admin.auth().deleteUser(userId);
+    logger.info(`Firebase Auth 계정 삭제 완료 — userId: ${userId}`);
+
+    logger.success(`회원 탈퇴 완료 — userId: ${userId}`);
+    res.json({ status: 'ok' });
+
+  } catch (err) {
+    logger.error(`회원 탈퇴 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 예외 처리 ──────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
   logger.error('uncaughtException:', err.message);
