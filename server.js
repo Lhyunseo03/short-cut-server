@@ -53,6 +53,7 @@ const { verifyToken } = require('./middleware/auth');
 
 // 스크롤 배치 저장 — POST /userlogs
 // Android에서 10개 누적 or 5분마다 배치 전송
+
 app.post('/userlogs', verifyToken, async (req, res) => {
   try {
     const { userId, timestamp, scrollCount } = req.body;
@@ -84,7 +85,7 @@ app.post('/userlogs', verifyToken, async (req, res) => {
 
 // user별 조회 — GET /logs/:userId
 // 특정 유저의 최근 50개 로그 반환 
-app.get('/logs/:userId', async (req, res) => {
+app.get('/logs/:userId', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const snapshot = await db.collection('userLogs')
