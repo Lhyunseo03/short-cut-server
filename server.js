@@ -10,6 +10,19 @@ const { registerHandlers } = require('./handlers/socketHandlers');
 // ── 설정 ───────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
+// KST (한국 표준시) = UTC + 9시간
+const KST_OFFSET = 9 * 60 * 60 * 1000;
+
+// timestamp(ms)를 KST 기준 날짜 문자열(YYYY-MM-DD)로 변환
+function toKSTDateString(timestamp) {
+  return new Date(timestamp + KST_OFFSET).toISOString().slice(0, 10);
+}
+
+// timestamp(ms)의 KST 기준 시(hour) 반환
+function toKSTHour(timestamp) {
+  return new Date(timestamp + KST_OFFSET).getUTCHours();
+}
+
 // ── Express ────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
@@ -169,9 +182,9 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
     }
 
-    // 하루 시작/끝 시각 계산
-    const startOfDay = new Date(date + 'T00:00:00.000Z').getTime();
-    const endOfDay   = new Date(date + 'T23:59:59.999Z').getTime();
+    // 하루 시작/끝 시각 계산 (KST 기준)
+    const startOfDay = new Date(date + 'T00:00:00.000+09:00').getTime();
+    const endOfDay   = new Date(date + 'T23:59:59.999+09:00').getTime();
 
     // limit 가져오기 (없으면 기본값)
     const limitsDoc = await db.collection('limits').doc(userId).get();
@@ -195,7 +208,7 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
     // 시간대별 그래프
     const hourlyGraph = Array.from({ length: 24 }, (_, i) => ({ hour: i, scrollCount: 0, exceeded: false }));
     logs.forEach(log => {
-      const hour = new Date(log.timestamp).getHours();
+      const hour = toKSTHour(log.timestamp); // KST 기준 시간대
       hourlyGraph[hour].scrollCount += (log.scrollCount);
     });
 
@@ -227,7 +240,7 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
 
     // hourlyGraph에 exceeded 표시
     hourlyViolations.forEach(v => {
-      const hour = new Date(v.time).getHours();
+      const hour = toKSTHour(new Date(v.time).getTime()); // KST 기준 시간대
       hourlyGraph[hour].exceeded = true;
     });
 
@@ -274,16 +287,16 @@ app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
     }
 
-    // 이번 주 월요일 ~ 오늘 계산
-    const today = new Date(date + 'T00:00:00.000Z');
-    const dayOfWeek = today.getUTCDay(); // 0=일, 1=월, ..., 6=토
+    // 이번 주 월요일 ~ 오늘 계산 (KST 기준)
+    const today = new Date(date + 'T00:00:00.000+09:00');
+    const dayOfWeek = today.getUTCDay(); // KST 자정 기준이므로 UTC day와 동일
     const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
 
     const weekStart = new Date(today);
     weekStart.setUTCDate(today.getUTCDate() - daysFromMonday);
 
     const startTs = weekStart.getTime();
-    const endTs   = new Date(date + 'T23:59:59.999Z').getTime();
+    const endTs   = new Date(date + 'T23:59:59.999+09:00').getTime();
     const daysPassed = daysFromMonday + 1; // 월요일 포함
 
     // 스크롤 로그 가져오기
@@ -306,7 +319,7 @@ app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
     // 날짜별 스크롤 횟수
     const dailyMap = {};
     logs.forEach(log => {
-      const d = new Date(log.timestamp).toISOString().slice(0, 10);
+      const d = toKSTDateString(log.timestamp); // KST 기준 날짜
       dailyMap[d] = (dailyMap[d] || 0) + (log.scrollCount);
     });
 
@@ -321,7 +334,7 @@ app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
 
     res.json({
       userId,
-      weekStart: weekStart.toISOString().slice(0, 10),
+      weekStart: toKSTDateString(weekStart.getTime()),
       weekEnd:   date,
       totalScroll,
       avgScrollPerDay,
@@ -376,14 +389,15 @@ app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
     }
 
-    // 이번 달 시작/끝 계산
-    const startOfMonth = new Date(date + '-01T00:00:00.000Z').getTime();
-    const today = new Date();
+    // 이번 달 시작/끝 계산 (KST 기준)
+    const startOfMonth = new Date(date + '-01T00:00:00.000+09:00').getTime();
+    const todayKST = new Date(new Date().getTime() + KST_OFFSET); // 현재 KST 날짜
+    const todayKSTStr = todayKST.toISOString().slice(0, 10);
     const endOfMonth = new Date(
-      today.getUTCFullYear() === parseInt(date.slice(0, 4)) &&
-      today.getUTCMonth() + 1 === parseInt(date.slice(5, 7))
-        ? today.toISOString().slice(0, 10) + 'T23:59:59.999Z'
-        : date + '-' + new Date(parseInt(date.slice(0, 4)), parseInt(date.slice(5, 7)), 0).getDate() + 'T23:59:59.999Z'
+      todayKST.getUTCFullYear() === parseInt(date.slice(0, 4)) &&
+      todayKST.getUTCMonth() + 1 === parseInt(date.slice(5, 7))
+        ? todayKSTStr + 'T23:59:59.999+09:00'
+        : date + '-' + new Date(parseInt(date.slice(0, 4)), parseInt(date.slice(5, 7)), 0).getDate() + 'T23:59:59.999+09:00'
     ).getTime();
 
     // 지난 일수 계산
@@ -408,7 +422,7 @@ app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
     // 날짜별 스크롤 횟수
     const dailyMap = {};
     logs.forEach(log => {
-      const d = new Date(log.timestamp).toISOString().slice(0, 10);
+      const d = toKSTDateString(log.timestamp); // KST 기준 날짜
       dailyMap[d] = (dailyMap[d] || 0) + (log.scrollCount);
     });
 
