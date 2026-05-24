@@ -117,7 +117,7 @@ app.get('/logs/:userId', verifyToken, async (req, res) => {
 
 // 시간 범위 조회 — GET /logs/:userId?start=1700000000000&end=1700999999999
 // 시작시간, 끝시간 사이 로그만 반환 
-app.get('/logs/:userId/range', async (req, res) => {
+app.get('/logs/:userId/range', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { start, end } = req.query;
