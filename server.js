@@ -69,25 +69,28 @@ const { verifyToken } = require('./middleware/auth');
 
 app.post('/userlogs', verifyToken, async (req, res) => {
   try {
-    const { userId, timestamp, scrollCount } = req.body;
+    const { userId, logId, timestamp, scrollCount } = req.body;
 
-    // 필수 필드 검증
-    if (!userId || !timestamp || scrollCount === undefined) {
+    // 필수 필드 검증 — logId 추가됨 (중복 방지용 UUID)
+    if (!userId || !logId || !timestamp || scrollCount === undefined) {
       return res.status(400).json({ error: '필수 필드 누락' });
     }
 
     if (typeof scrollCount !== 'number' || scrollCount <= 0) {
       return res.status(400).json({ error: 'scrollCount는 양수여야 합니다' });
     }
-
     // Firestore 저장
-    await db.collection('userLogs').add({
+    // logId를 Firestore 문서 ID로 사용
+    // 앱이 같은 배치를 재전송해도 동일한 문서를 덮어쓰기 → 중복 집계 방지
+    // 기존 add() 방식은 호출할 때마다 새 문서 생성 → 중복 저장됨
+    await db.collection('userLogs').doc(logId).set({
       userId,
+      logId,
       timestamp,
       scrollCount,
     });
 
-    logger.success(`userLog 저장 완료 — userId: ${userId}, scrollCount: ${scrollCount}`);
+    logger.success(`userLog 저장 완료 — userId: ${userId}, logId: ${logId}, scrollCount: ${scrollCount}`);
     res.json({ status: 'ok' });
 
   } catch (err) {
@@ -95,7 +98,6 @@ app.post('/userlogs', verifyToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 // user별 조회 — GET /logs/:userId
 // 특정 유저의 최근 50개 로그 반환 
 app.get('/logs/:userId', verifyToken, async (req, res) => {
