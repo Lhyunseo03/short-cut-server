@@ -523,6 +523,44 @@ app.delete('/users/:userId', verifyToken, async (req, res) => {
   }
 });
 
+// AI 통계 분석 — POST /analyze
+// 앱이 보낸 통계 프롬프트를 Gemini에 전달하고 분석 결과만 반환
+// API 키는 서버 환경변수에만 보관 — 앱에 절대 노출 안 됨
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+app.post('/analyze', verifyToken, async (req, res) => {
+  try {
+    const { userId, prompt } = req.body;
+
+    // 필수 필드 검증
+    if (!userId || !prompt) {
+      return res.status(400).json({ error: '필수 필드 누락' });
+    }
+
+    // Gemini 클라이언트 초기화 — 환경변수에서 API 키 로드
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+    // 프롬프트가 최근 14일 통계라 길 수 있음 → 60초 타임아웃
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('AI 응답 타임아웃')), 60000)
+      )
+    ]);
+
+    // Gemini 응답에서 텍스트만 추출해서 반환
+    const analysis = result.response.text();
+
+    logger.success(`AI 분석 완료 — userId: ${userId}`);
+    res.json({ analysis });
+
+  } catch (err) {
+    logger.error(`AI 분석 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 예외 처리 ──────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
   logger.error('uncaughtException:', err.message);

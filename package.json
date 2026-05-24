@@ -9,6 +9,7 @@
     "test-client": "node test-client.js"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "express": "^4.18.2",
     "firebase-admin": "^13.8.0",
     "socket.io": "^4.7.2"
