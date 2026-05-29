@@ -371,6 +371,45 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
   }
 });
 
+// 일간 통계 finalize — POST /stats/:userId/daily/finalize
+// 자정 롤오버 시 앱(AccessibilityService)이 호출 — 어제 날짜와 그날 실제 적용됐던 limit 을 함께 전송.
+// computeDailyStats 는 현재 limits/{userId} 를 읽어 오므로, 과거 날짜 캐시가 오늘의 limit 으로
+// 덮어씌워지는 버그를 막기 위해 앱이 직접 snapshots 한 limit 을 body 로 보냄.
+app.post('/stats/:userId/daily/finalize', verifyToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { date, dailyLimit, hourlyLimit } = req.body;
+ 
+    if (!date || dailyLimit == null || hourlyLimit == null) {
+      return res.status(400).json({ error: 'date, dailyLimit, hourlyLimit 필드가 필요합니다' });
+    }
+ 
+    // 오늘 이후 날짜는 finalize 불가 (오늘은 아직 진행 중)
+    const todayKST = toKSTDateString(Date.now());
+    if (date >= todayKST) {
+      return res.status(400).json({ error: `과거 날짜만 finalize 가능합니다 (date=${date}, today=${todayKST})` });
+    }
+ 
+    // 앱이 보내 준 어제 limit 으로 통계 계산
+    const limits = { dailyLimit: Number(dailyLimit), hourlyLimit: Number(hourlyLimit) };
+    const stats  = await computeDailyStats(userId, date, limits);
+ 
+    // Firestore 캐시에 덮어쓰기 (기존 캐시가 있어도 정확한 limit 으로 갱신)
+    await db.collection('stats').doc(userId).collection('daily').doc(date).set({
+      ...stats,
+      finalizedAt: Date.now(),   // finalize 시각 (디버깅용)
+    });
+ 
+    logger.info(`daily finalize 완료 — userId=${userId}, date=${date}, daily=${dailyLimit}, hourly=${hourlyLimit}`);
+    res.json({ status: 'ok', date, totalScroll: stats.totalScroll });
+ 
+  } catch (err) {
+    logger.error(`daily finalize 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // 주간 통계 — GET /stats/:userId/weekly?date=2026-05-03
 // stats 캐시 기반으로 전환 — userLogs 대량 스캔 없이 일별 캐시 합산
 // platform별 집계, dailyTotals(앱 히트맵용) 포함
