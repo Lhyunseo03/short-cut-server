@@ -149,11 +149,20 @@ async function computeDailyStats(userId, date, limits) {
     ? totalScroll <= limits.dailyLimit
     : true;
 
+  // violations 배열 — 앱 UI용 간소화 포맷 (timestamp, limitType, action, hour)
+  const violationsArr = violations.map(v => ({
+    timestamp: v.timestamp,
+    limitType: v.limitType,
+    action:    v.action,
+    hour:      toKSTHour(v.timestamp),
+  }));
+
   return {
     userId,
     date,
     totalScroll,
     platform,
+    byPlatform:          platform,           // platform 의 alias — 앱 도넛 그래프용
     dailyLimit:          limits.dailyLimit,
     hourlyLimit:         limits.hourlyLimit,
     goalAchieved,
@@ -162,6 +171,7 @@ async function computeDailyStats(userId, date, limits) {
     peakHour,
     hourlyGraph,
     hourlyViolations,
+    violations:          violationsArr,      // 전체 violation 목록 (hourly+daily)
     hourlyLimitExceeded: hourlyViolations.length > 0,
     dailyViolation:      !!dailyViolEntry,
     dailyViolationTime:  dailyViolEntry
@@ -276,20 +286,20 @@ app.get('/logs/:userId/range', verifyToken, async (req, res) => {
 });
 
 // violation_event 수신 — POST /violations
-// scrollCount → hourlyScrollCount + dailyScrollCount 로 분리
 // hourlyScrollCount: 위반 시점 최근 1시간 누적 스크롤 수
 // dailyScrollCount:  위반 시점 오늘 누적 스크롤 수
+// platform:          위반 발생 플랫폼 (youtube / instagram / tiktok / unknown)
+// 구버전 앱 호환: hourlyScrollCount/dailyScrollCount 없으면 scrollCount 로 폴백
 app.post('/violations', verifyToken, async (req, res) => {
   try {
-    const { userId, timestamp, limitType, hourlyScrollCount, dailyScrollCount, action } = req.body;
+    const {
+      userId, timestamp, limitType, action, platform,
+      hourlyScrollCount, dailyScrollCount, scrollCount,
+    } = req.body;
 
     // 필수 필드 검증
     if (!userId || !timestamp || !limitType || !action) {
       return res.status(400).json({ error: '필수 필드 누락' });
-    }
-
-    if (hourlyScrollCount === undefined || dailyScrollCount === undefined) {
-      return res.status(400).json({ error: 'hourlyScrollCount, dailyScrollCount 필드 누락' });
     }
 
     if (!['hourly', 'daily'].includes(limitType)) {
@@ -300,17 +310,22 @@ app.post('/violations', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'action은 stop 또는 ignore여야 합니다' });
     }
 
+    // hourlyScrollCount/dailyScrollCount 없으면 scrollCount 로 폴백 (구버전 앱 호환)
+    const hourly = hourlyScrollCount ?? scrollCount ?? 0;
+    const daily  = dailyScrollCount  ?? scrollCount ?? 0;
+
     // Firestore 저장
     await db.collection('violations').add({
       userId,
       timestamp,
       limitType,
-      hourlyScrollCount, // 위반 시점 최근 1시간 스크롤 수
-      dailyScrollCount,  // 위반 시점 오늘 누적 스크롤 수
+      hourlyScrollCount: hourly,
+      dailyScrollCount:  daily,
       action,
+      platform:          platform || 'unknown',
     });
 
-    logger.success(`violation 저장 완료 — userId: ${userId}, limitType: ${limitType}, hourly: ${hourlyScrollCount}, daily: ${dailyScrollCount}`);
+    logger.success(`violation 저장 완료 — userId: ${userId}, limitType: ${limitType}, hourly: ${hourly}, daily: ${daily}, platform: ${platform || 'unknown'}`);
     res.json({ status: 'ok' });
 
   } catch (err) {
@@ -352,6 +367,7 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
       date,
       totalScroll:         stats.totalScroll,
       platform:            stats.platform,
+      byPlatform:          stats.byPlatform,          // 도넛 그래프용 (platform 과 동일값)
       dailyLimit:          stats.dailyLimit,
       hourlyLimit:         stats.hourlyLimit,
       goalAchieved:        stats.goalAchieved,
@@ -360,7 +376,8 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
       peakHour:            stats.peakHour,
       hourlyGraph:         hourlyGraphArr,
       hourlyLimitExceeded: stats.hourlyLimitExceeded,
-      hourlyViolations:    stats.hourlyViolations,  // timeKST 포함
+      hourlyViolations:    stats.hourlyViolations,    // timeKST 포함
+      violations:          stats.violations,           // 전체 violation 목록
       dailyViolation:      stats.dailyViolation,
       dailyViolationTime:  stats.dailyViolationTime,
     });
@@ -379,36 +396,35 @@ app.post('/stats/:userId/daily/finalize', verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date, dailyLimit, hourlyLimit } = req.body;
- 
+
     if (!date || dailyLimit == null || hourlyLimit == null) {
       return res.status(400).json({ error: 'date, dailyLimit, hourlyLimit 필드가 필요합니다' });
     }
- 
+
     // 오늘 이후 날짜는 finalize 불가 (오늘은 아직 진행 중)
     const todayKST = toKSTDateString(Date.now());
     if (date >= todayKST) {
       return res.status(400).json({ error: `과거 날짜만 finalize 가능합니다 (date=${date}, today=${todayKST})` });
     }
- 
+
     // 앱이 보내 준 어제 limit 으로 통계 계산
     const limits = { dailyLimit: Number(dailyLimit), hourlyLimit: Number(hourlyLimit) };
     const stats  = await computeDailyStats(userId, date, limits);
- 
+
     // Firestore 캐시에 덮어쓰기 (기존 캐시가 있어도 정확한 limit 으로 갱신)
     await db.collection('stats').doc(userId).collection('daily').doc(date).set({
       ...stats,
       finalizedAt: Date.now(),   // finalize 시각 (디버깅용)
     });
- 
+
     logger.info(`daily finalize 완료 — userId=${userId}, date=${date}, daily=${dailyLimit}, hourly=${hourlyLimit}`);
     res.json({ status: 'ok', date, totalScroll: stats.totalScroll });
- 
+
   } catch (err) {
     logger.error(`daily finalize 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // 주간 통계 — GET /stats/:userId/weekly?date=2026-05-03
 // stats 캐시 기반으로 전환 — userLogs 대량 스캔 없이 일별 캐시 합산
@@ -550,7 +566,8 @@ app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
       return res.json({
         userId, month: date,
         totalScroll: 0, avgScrollPerDay: 0, daysPassed: 0,
-        platform: { youtube: 0, instagram: 0, tiktok: 0 },
+        platform:   { youtube: 0, instagram: 0, tiktok: 0 },
+        byPlatform: { youtube: 0, instagram: 0, tiktok: 0 },
         peakDay: null, goalAchievedCount: 0, stopCount: 0, ignoreCount: 0,
         dailyTotals: {},
       });
@@ -600,6 +617,7 @@ app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
       avgScrollPerDay: daysPassed > 0 ? Math.round(totalScroll / daysPassed) : 0,
       daysPassed,
       platform,
+      byPlatform:      platform,   // 도넛 그래프용 (platform 과 동일값)
       peakDay:         peakDay?.totalScroll > 0
         ? { date: peakDay.date, scrollCount: peakDay.totalScroll }
         : null,
@@ -742,4 +760,4 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
   logger.error('unhandledRejection:', reason);
-})
+});
