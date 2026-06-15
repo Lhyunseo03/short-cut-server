@@ -306,12 +306,12 @@ app.get('/logs/:userId/range', verifyToken, async (req, res) => {
 app.post('/violations', verifyToken, async (req, res) => {
   try {
     const {
-      userId, timestamp, limitType, action, platform,
+      userId, violationId, timestamp, limitType, action, platform,
       hourlyScrollCount, dailyScrollCount, scrollCount,
     } = req.body;
 
-    // 필수 필드 검증
-    if (!userId || !timestamp || !limitType || !action) {
+    // 필수 필드 검증 — violationId 추가 (재전송 중복 방지용 고유 ID)
+    if (!userId || !violationId || !timestamp || !limitType || !action) {
       return res.status(400).json({ error: '필수 필드 누락' });
     }
 
@@ -327,9 +327,11 @@ app.post('/violations', verifyToken, async (req, res) => {
     const hourly = hourlyScrollCount ?? scrollCount ?? 0;
     const daily  = dailyScrollCount  ?? scrollCount ?? 0;
 
-    // Firestore 저장
-    await db.collection('violations').add({
+    // Firestore 저장 — violationId를 문서 ID로 사용해 재전송 시 중복 방지(멱등성)
+    // 앱이 재시도 큐로 같은 violation을 다시 보내도 같은 문서를 덮어쓰기 → 중복 집계 방지
+    await db.collection('violations').doc(violationId).set({
       userId,
+      violationId,
       timestamp,
       limitType,
       hourlyScrollCount: hourly,
