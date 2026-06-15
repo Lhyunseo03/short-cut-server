@@ -744,7 +744,7 @@ app.post('/analyze', verifyToken, async (req, res) => {
 
     // Gemini 클라이언트 초기화 — 환경변수에서 API 키 로드
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
     // 프롬프트가 최근 14일 통계라 길 수 있음 → 60초 타임아웃
     const result = await Promise.race([
