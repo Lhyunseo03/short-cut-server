@@ -236,6 +236,19 @@ app.post('/userlogs', verifyToken, async (req, res) => {
       platform: platform || 'youtube', // platform 없는 구버전 앱은 youtube로 처리
     });
 
+    // ───── [추가] 통계 캐시 무효화 ─────
+    // 이 로그가 속한 날짜(KST)의 stats 캐시를 지운다.
+    // 과거 날짜 캐시는 한번 저장되면 재계산 안 되므로(getDailyStats),
+    // 늦게 도착한 로그가 반영되도록 해당 날짜 캐시를 삭제 → 다음 조회 때 재계산.
+    const logDateKST = toKSTDateString(timestamp);
+    const todayKST = toKSTDateString(Date.now());
+    if (logDateKST !== todayKST) {       // 오늘은 어차피 캐시 안 함(실시간) → 과거 날짜만
+      await db.collection('stats').doc(userId)
+        .collection('daily').doc(logDateKST).delete();
+      logger.info(`stats 캐시 무효화 — userId: ${userId}, date: ${logDateKST}`);
+    }
+    // ──────────────────────────────────
+
     logger.success(`userLog 저장 완료 — userId: ${userId}, logId: ${logId}, scrollCount: ${scrollCount}, platform: ${platform || 'youtube'}`);
     res.json({ status: 'ok' });
 
