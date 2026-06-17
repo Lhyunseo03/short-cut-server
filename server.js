@@ -656,11 +656,7 @@ app.get('/limits/:userId', verifyToken, async (req, res) => {
     const doc = await db.collection('limits').doc(userId).get();
 
     if (!doc.exists) {
-      return res.json({
-        userId,
-        hourlyLimit: 50,
-        dailyLimit: 100,
-      }); // 기본값 반환
+      return res.status(404).json({ error: 'no limit set' });
     }
 
     res.json({ userId, ...doc.data() }); // userId랑 doc에 있는 data 합쳐서 넣음
