@@ -1,13 +1,13 @@
-const admin = require('firebase-admin');
+const admin = require("firebase-admin");
 
 admin.initializeApp({
   credential: admin.credential.cert({
-    projectId:   process.env.FIREBASE_PROJECT_ID,
+    projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
   }),
 });
 
 const db = admin.firestore();
-//admin을 firebase.js 밖으로 꺼내서 다른 파일에서 쓸 수 있음 
+//admin을 firebase.js 밖으로 꺼내서 다른 파일에서 쓸 수 있음
 module.exports = { db, admin };
