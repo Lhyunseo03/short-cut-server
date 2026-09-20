@@ -1,3 +1,5 @@
+> 1학기 엔드포인트 기준. 2학기 다중 기기·그룹 API는 `API_SPEC_multidevice.md` 참고.
+
 # Short-Cut Server API 문서
 
 **Base URL:** `https://short-cut-server-production.up.railway.app`
@@ -21,11 +23,13 @@
 서버가 살아있는지 확인해요.
 
 **요청 예시:**
+
 ```
 GET /health
 ```
 
 **응답 예시:**
+
 ```json
 {
   "status": "ok",
@@ -43,11 +47,13 @@ GET /health
 사용자의 hourly / daily limit을 저장해요. 이미 있으면 덮어써요.
 
 **요청 예시:**
+
 ```
 POST /limits/user123
 ```
 
 **Body:**
+
 ```json
 {
   "hourlyLimit": 50,
@@ -55,12 +61,13 @@ POST /limits/user123
 }
 ```
 
-| 필드 | 타입 | 필수 | 설명 |
-|------|------|------|------|
-| hourlyLimit | number | ✅ | 1시간 스크롤 한도 |
-| dailyLimit | number | ✅ | 하루 스크롤 한도 |
+| 필드        | 타입   | 필수 | 설명              |
+| ----------- | ------ | ---- | ----------------- |
+| hourlyLimit | number | ✅   | 1시간 스크롤 한도 |
+| dailyLimit  | number | ✅   | 하루 스크롤 한도  |
 
 **응답 예시:**
+
 ```json
 {
   "status": "ok"
@@ -74,11 +81,13 @@ POST /limits/user123
 사용자의 limit 설정을 가져와요. 설정이 없으면 기본값(hourly: 50, daily: 100)을 반환해요.
 
 **요청 예시:**
+
 ```
 GET /limits/user123
 ```
 
 **응답 예시:**
+
 ```json
 {
   "userId": "user123",
@@ -97,11 +106,13 @@ GET /limits/user123
 Android 앱에서 violation이 발생하면 서버로 전송해요.
 
 **요청 예시:**
+
 ```
 POST /violations
 ```
 
 **Body:**
+
 ```json
 {
   "userId": "user123",
@@ -112,15 +123,16 @@ POST /violations
 }
 ```
 
-| 필드 | 타입 | 필수 | 설명 |
-|------|------|------|------|
-| userId | string | ✅ | 유저 아이디 |
-| timestamp | number | ✅ | 발생 시각 (Unix ms) |
-| limitType | string | ✅ | `"hourly"` 또는 `"daily"` |
-| scrollCount | number | ✅ | 그 시점 최근 1시간 스크롤 수 |
-| action | string | ✅ | `"stop"` 또는 `"ignore"` |
+| 필드        | 타입   | 필수 | 설명                         |
+| ----------- | ------ | ---- | ---------------------------- |
+| userId      | string | ✅   | 유저 아이디                  |
+| timestamp   | number | ✅   | 발생 시각 (Unix ms)          |
+| limitType   | string | ✅   | `"hourly"` 또는 `"daily"`    |
+| scrollCount | number | ✅   | 그 시점 최근 1시간 스크롤 수 |
+| action      | string | ✅   | `"stop"` 또는 `"ignore"`     |
 
 **응답 예시:**
+
 ```json
 {
   "status": "ok"
@@ -136,16 +148,18 @@ POST /violations
 특정 날짜의 일간 통계를 가져와요.
 
 **요청 예시:**
+
 ```
 GET /stats/user123/daily?date=2026-05-03
 ```
 
-| 파라미터 | 위치 | 필수 | 설명 |
-|----------|------|------|------|
-| userId | 주소 | ✅ | 유저 아이디 |
-| date | 쿼리 | ✅ | 날짜 (예: `2026-05-03`) |
+| 파라미터 | 위치 | 필수 | 설명                    |
+| -------- | ---- | ---- | ----------------------- |
+| userId   | 주소 | ✅   | 유저 아이디             |
+| date     | 쿼리 | ✅   | 날짜 (예: `2026-05-03`) |
 
 **응답 예시:**
+
 ```json
 {
   "userId": "user123",
@@ -176,18 +190,18 @@ GET /stats/user123/daily?date=2026-05-03
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| totalScroll | 그날 총 스크롤 횟수 |
-| dailyLimit | 하루 limit |
-| dailyViolation | daily limit 넘었는지 여부 |
-| dailyViolationTime | daily limit 넘은 시각 (없으면 null) |
-| hourlyLimitExceeded | hourly limit 넘은 적 있는지 여부 |
-| hourlyViolations | hourly violation 목록 |
-| stopCount | stop 버튼 누른 횟수 |
-| ignoreCount | ignore 버튼 누른 횟수 |
-| peakHour | recentHourCount/hourlyLimit 비율이 가장 높은 시각 |
-| hourlyGraph | 시간대별 스크롤 횟수 (exceeded = hourly violation 발생 여부) |
+| 필드                | 설명                                                         |
+| ------------------- | ------------------------------------------------------------ |
+| totalScroll         | 그날 총 스크롤 횟수                                          |
+| dailyLimit          | 하루 limit                                                   |
+| dailyViolation      | daily limit 넘었는지 여부                                    |
+| dailyViolationTime  | daily limit 넘은 시각 (없으면 null)                          |
+| hourlyLimitExceeded | hourly limit 넘은 적 있는지 여부                             |
+| hourlyViolations    | hourly violation 목록                                        |
+| stopCount           | stop 버튼 누른 횟수                                          |
+| ignoreCount         | ignore 버튼 누른 횟수                                        |
+| peakHour            | recentHourCount/hourlyLimit 비율이 가장 높은 시각            |
+| hourlyGraph         | 시간대별 스크롤 횟수 (exceeded = hourly violation 발생 여부) |
 
 ---
 
@@ -196,16 +210,18 @@ GET /stats/user123/daily?date=2026-05-03
 이번 주 (월요일 ~ 오늘) 주간 통계를 가져와요.
 
 **요청 예시:**
+
 ```
 GET /stats/user123/weekly?date=2026-05-03
 ```
 
-| 파라미터 | 위치 | 필수 | 설명 |
-|----------|------|------|------|
-| userId | 주소 | ✅ | 유저 아이디 |
-| date | 쿼리 | ✅ | 기준 날짜 (예: `2026-05-03`) |
+| 파라미터 | 위치 | 필수 | 설명                         |
+| -------- | ---- | ---- | ---------------------------- |
+| userId   | 주소 | ✅   | 유저 아이디                  |
+| date     | 쿼리 | ✅   | 기준 날짜 (예: `2026-05-03`) |
 
 **응답 예시:**
+
 ```json
 {
   "userId": "user123",
@@ -221,14 +237,14 @@ GET /stats/user123/weekly?date=2026-05-03
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| weekStart | 이번 주 월요일 |
-| weekEnd | 오늘 |
-| totalScroll | 이번 주 총 스크롤 횟수 |
+| 필드            | 설명                            |
+| --------------- | ------------------------------- |
+| weekStart       | 이번 주 월요일                  |
+| weekEnd         | 오늘                            |
+| totalScroll     | 이번 주 총 스크롤 횟수          |
 | avgScrollPerDay | 하루 평균 (총 횟수 / 지난 일수) |
-| daysPassed | 월요일부터 오늘까지 일수 |
-| peakDay | 가장 많이 스크롤한 날 |
+| daysPassed      | 월요일부터 오늘까지 일수        |
+| peakDay         | 가장 많이 스크롤한 날           |
 
 ---
 
@@ -237,16 +253,18 @@ GET /stats/user123/weekly?date=2026-05-03
 이번 달 월간 통계를 가져와요.
 
 **요청 예시:**
+
 ```
 GET /stats/user123/monthly?date=2026-05
 ```
 
-| 파라미터 | 위치 | 필수 | 설명 |
-|----------|------|------|------|
-| userId | 주소 | ✅ | 유저 아이디 |
-| date | 쿼리 | ✅ | 연월 (예: `2026-05`) |
+| 파라미터 | 위치 | 필수 | 설명                 |
+| -------- | ---- | ---- | -------------------- |
+| userId   | 주소 | ✅   | 유저 아이디          |
+| date     | 쿼리 | ✅   | 연월 (예: `2026-05`) |
 
 **응답 예시:**
+
 ```json
 {
   "userId": "user123",
@@ -261,13 +279,13 @@ GET /stats/user123/monthly?date=2026-05
 }
 ```
 
-| 필드 | 설명 |
-|------|------|
-| month | 조회 연월 |
-| totalScroll | 이번 달 총 스크롤 횟수 |
+| 필드            | 설명                            |
+| --------------- | ------------------------------- |
+| month           | 조회 연월                       |
+| totalScroll     | 이번 달 총 스크롤 횟수          |
 | avgScrollPerDay | 하루 평균 (총 횟수 / 지난 일수) |
-| daysPassed | 1일부터 오늘까지 일수 |
-| peakDay | 가장 많이 스크롤한 날 |
+| daysPassed      | 1일부터 오늘까지 일수           |
+| peakDay         | 가장 많이 스크롤한 날           |
 
 ---
 
@@ -278,11 +296,13 @@ GET /stats/user123/monthly?date=2026-05
 특정 유저의 최근 50개 스크롤 로그를 가져와요. 개발/디버깅 용도예요.
 
 **요청 예시:**
+
 ```
 GET /logs/user123
 ```
 
 **응답 예시:**
+
 ```json
 {
   "userId": "user123",
@@ -308,21 +328,22 @@ GET /logs/user123
 시간 범위로 스크롤 로그를 가져와요. 개발/디버깅 용도예요.
 
 **요청 예시:**
+
 ```
 GET /logs/user123/range?start=1700000000000&end=1700999999999
 ```
 
-| 파라미터 | 위치 | 필수 | 설명 |
-|----------|------|------|------|
-| userId | 주소 | ✅ | 유저 아이디 |
-| start | 쿼리 | ❌ | 시작 시각 (Unix ms) |
-| end | 쿼리 | ❌ | 끝 시각 (Unix ms) |
+| 파라미터 | 위치 | 필수 | 설명                |
+| -------- | ---- | ---- | ------------------- |
+| userId   | 주소 | ✅   | 유저 아이디         |
+| start    | 쿼리 | ❌   | 시작 시각 (Unix ms) |
+| end      | 쿼리 | ❌   | 끝 시각 (Unix ms)   |
 
 ---
 
 ## 에러 코드
 
-| 코드 | 설명 |
-|------|------|
-| 400 | 잘못된 요청 (필수 필드 누락, 잘못된 값) |
-| 500 | 서버 내부 오류 |
+| 코드 | 설명                                    |
+| ---- | --------------------------------------- |
+| 400  | 잘못된 요청 (필수 필드 누락, 잘못된 값) |
+| 500  | 서버 내부 오류                          |
