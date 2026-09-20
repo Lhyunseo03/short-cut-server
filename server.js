@@ -1,11 +1,11 @@
 // server.js — 메인 서버 진입점
-'use strict';
+"use strict";
 
-const http    = require('http');
-const express = require('express');
-const { Server } = require('socket.io');
-const logger  = require('./utils/logger');
-const { registerHandlers } = require('./handlers/socketHandlers');
+const http = require("http");
+const express = require("express");
+const { Server } = require("socket.io");
+const logger = require("./utils/logger");
+const { registerHandlers } = require("./handlers/socketHandlers");
 
 // ── 설정 ───────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
@@ -26,7 +26,7 @@ function toKSTHour(timestamp) {
 // timestamp(ms)를 KST 기준 HH:mm 문자열로 변환 (hourly violation 시각 표시용)
 function toKSTHHMM(timestamp) {
   const d = new Date(timestamp + KST_OFFSET);
-  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 // ── Express ────────────────────────────────────────────────
@@ -34,9 +34,9 @@ const app = express();
 app.use(express.json());
 
 // 헬스체크 — Android 앱이나 CI에서 서버 살아있는지 확인용
-app.get('/health', (_req, res) => {
-  logger.info('헬스체크 요청 받음');
-  res.json({ status: 'ok', uptime: process.uptime(), time: Date.now() });
+app.get("/health", (_req, res) => {
+  logger.info("헬스체크 요청 받음");
+  res.json({ status: "ok", uptime: process.uptime(), time: Date.now() });
 });
 
 // ── HTTP + Socket.IO 서버 생성 ─────────────────────────────
@@ -45,11 +45,11 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: {
     // 개발 중에는 전체 허용, 프로덕션에서는 출처를 제한하세요
-    origin: '*',
-    methods: ['GET', 'POST'],
+    origin: "*",
+    methods: ["GET", "POST"],
   },
   // 클라이언트가 일시적으로 끊겼을 때 재연결을 기다리는 시간 (ms)
-  pingTimeout:  20000,
+  pingTimeout: 20000,
   pingInterval: 10000,
 });
 
@@ -59,16 +59,27 @@ registerHandlers(io);
 // ── 서버 시작 ──────────────────────────────────────────────
 // 서버가 localhost(127.0.0.1)에만 열려있어서 에뮬레이터가 못 붙는 거예요.
 // 0.0.0.0으로 바꾸면 에뮬레이터 포함 모든 네트워크 인터페이스에서 접근 가능해져요.
-httpServer.listen(PORT, '0.0.0.0', () => {
+httpServer.listen(PORT, "0.0.0.0", () => {
   logger.success(`서버 시작 — http://localhost:${PORT}`);
-  logger.info('대기 중인 이벤트: scroll_event, ping_test');
-  logger.info('헬스체크: GET /health');
+  logger.info("대기 중인 이벤트: scroll_event, ping_test");
+  logger.info("헬스체크: GET /health");
 });
 
 // ── 조회 API ───────────────────────────────────────────────
-const { db } = require('./utils/firebase');
+const { db } = require("./utils/firebase");
 // Firebase Auth 토큰 검증 미들웨어 import
-const { verifyToken } = require('./middleware/auth');
+const { verifyToken } = require("./middleware/auth");
+
+// ── 2학기 다중 기기 동기화 (D1~D6) ─────────────────────────
+// 라우트를 파일로 분리했다. server.js 가 이미 800줄이라 여기에 더 붙이면
+// 학기 말 그룹 기능까지 들어갔을 때 감당이 안 된다.
+//   routes/devices.js : POST /devices/register · GET /devices · DELETE /devices/:deviceId
+//   routes/sync.js    : GET /sync
+//   utils/fcm.js      : FCM data message (FLUSH / COUNT_UPDATED) 발송
+// 앱과의 계약 문서: API_SPEC_multidevice.md
+const { sendDataToOtherDevices } = require("./utils/fcm");
+app.use(require("./routes/devices").router);
+app.use(require("./routes/sync").router);
 
 // ══════════════════════════════════════════════════════════════
 // Stats 캐시 헬퍼
@@ -85,76 +96,78 @@ const { verifyToken } = require('./middleware/auth');
 // 원시 데이터(userLogs + violations)에서 하루 통계를 계산해 반환
 // 캐시 저장은 하지 않음 — 저장 여부는 호출 측에서 결정
 async function computeDailyStats(userId, date, limits) {
-  const startOfDay = new Date(date + 'T00:00:00.000+09:00').getTime();
-  const endOfDay   = new Date(date + 'T23:59:59.999+09:00').getTime();
+  const startOfDay = new Date(date + "T00:00:00.000+09:00").getTime();
+  const endOfDay = new Date(date + "T23:59:59.999+09:00").getTime();
 
   // 그날 스크롤 로그 가져오기
-  const logsSnap = await db.collection('userLogs')
-    .where('userId', '==', userId)
-    .where('timestamp', '>=', startOfDay)
-    .where('timestamp', '<=', endOfDay)
-    .orderBy('timestamp', 'asc')
+  const logsSnap = await db
+    .collection("userLogs")
+    .where("userId", "==", userId)
+    .where("timestamp", ">=", startOfDay)
+    .where("timestamp", "<=", endOfDay)
+    .orderBy("timestamp", "asc")
     .get();
-  const logs = logsSnap.docs.map(d => d.data());
+  const logs = logsSnap.docs.map((d) => d.data());
 
   // 총 스크롤 횟수
   const totalScroll = logs.reduce((s, l) => s + l.scrollCount, 0);
 
   // 플랫폼별 집계 — platform 필드 없는 구버전 로그는 youtube로 처리
   const platform = { youtube: 0, instagram: 0, tiktok: 0 };
-  logs.forEach(l => {
-    const p = l.platform || 'youtube';
+  logs.forEach((l) => {
+    const p = l.platform || "youtube";
     if (p in platform) platform[p] += l.scrollCount;
   });
 
   // 시간대별 그래프 (24칸, 인덱스 = KST 시간)
   const hourlyGraph = new Array(24).fill(0);
-  logs.forEach(l => { hourlyGraph[toKSTHour(l.timestamp)] += l.scrollCount; });
+  logs.forEach((l) => {
+    hourlyGraph[toKSTHour(l.timestamp)] += l.scrollCount;
+  });
 
   // 가장 많이 본 시간대
-  const peakHour = totalScroll > 0
-    ? hourlyGraph.indexOf(Math.max(...hourlyGraph))
-    : null;
+  const peakHour =
+    totalScroll > 0 ? hourlyGraph.indexOf(Math.max(...hourlyGraph)) : null;
 
   // 그날 violation 가져오기
-  const violSnap = await db.collection('violations')
-    .where('userId', '==', userId)
-    .where('timestamp', '>=', startOfDay)
-    .where('timestamp', '<=', endOfDay)
-    .orderBy('timestamp', 'asc')
+  const violSnap = await db
+    .collection("violations")
+    .where("userId", "==", userId)
+    .where("timestamp", ">=", startOfDay)
+    .where("timestamp", "<=", endOfDay)
+    .orderBy("timestamp", "asc")
     .get();
-  const violations = violSnap.docs.map(d => d.data());
+  const violations = violSnap.docs.map((d) => d.data());
 
   // stop / ignore 횟수
-  const stopCount   = violations.filter(v => v.action === 'stop').length;
-  const ignoreCount = violations.filter(v => v.action === 'ignore').length;
+  const stopCount = violations.filter((v) => v.action === "stop").length;
+  const ignoreCount = violations.filter((v) => v.action === "ignore").length;
 
   // hourly violation 목록 — timeKST는 "14:23" 형식으로 앱 UI에서 바로 표시 가능
   // hourlyScrollCount / dailyScrollCount: 구버전(scrollCount만 있는) 데이터도 호환
   const hourlyViolations = violations
-    .filter(v => v.limitType === 'hourly')
-    .map(v => ({
-      time:              new Date(v.timestamp).toISOString(),
-      timeKST:           toKSTHHMM(v.timestamp),
+    .filter((v) => v.limitType === "hourly")
+    .map((v) => ({
+      time: new Date(v.timestamp).toISOString(),
+      timeKST: toKSTHHMM(v.timestamp),
       hourlyScrollCount: v.hourlyScrollCount ?? v.scrollCount ?? 0,
-      dailyScrollCount:  v.dailyScrollCount  ?? 0,
-      hourlyLimit:       limits.hourlyLimit,
+      dailyScrollCount: v.dailyScrollCount ?? 0,
+      hourlyLimit: limits.hourlyLimit,
     }));
 
   // daily violation
-  const dailyViolEntry = violations.find(v => v.limitType === 'daily');
+  const dailyViolEntry = violations.find((v) => v.limitType === "daily");
 
   // 목표 달성 여부 — 일일 한도 이내면 달성
-  const goalAchieved = limits.dailyLimit > 0
-    ? totalScroll <= limits.dailyLimit
-    : true;
+  const goalAchieved =
+    limits.dailyLimit > 0 ? totalScroll <= limits.dailyLimit : true;
 
   // violations 배열 — 앱 UI용 간소화 포맷 (timestamp, limitType, action, hour)
-  const violationsArr = violations.map(v => ({
+  const violationsArr = violations.map((v) => ({
     timestamp: v.timestamp,
     limitType: v.limitType,
-    action:    v.action,
-    hour:      toKSTHour(v.timestamp),
+    action: v.action,
+    hour: toKSTHour(v.timestamp),
   }));
 
   return {
@@ -162,19 +175,19 @@ async function computeDailyStats(userId, date, limits) {
     date,
     totalScroll,
     platform,
-    byPlatform:          platform,           // platform 의 alias — 앱 도넛 그래프용
-    dailyLimit:          limits.dailyLimit,
-    hourlyLimit:         limits.hourlyLimit,
+    byPlatform: platform, // platform 의 alias — 앱 도넛 그래프용
+    dailyLimit: limits.dailyLimit,
+    hourlyLimit: limits.hourlyLimit,
     goalAchieved,
     stopCount,
     ignoreCount,
     peakHour,
     hourlyGraph,
     hourlyViolations,
-    violations:          violationsArr,      // 전체 violation 목록 (hourly+daily)
+    violations: violationsArr, // 전체 violation 목록 (hourly+daily)
     hourlyLimitExceeded: hourlyViolations.length > 0,
-    dailyViolation:      !!dailyViolEntry,
-    dailyViolationTime:  dailyViolEntry
+    dailyViolation: !!dailyViolEntry,
+    dailyViolationTime: dailyViolEntry
       ? new Date(dailyViolEntry.timestamp).toISOString()
       : null,
     calculatedAt: Date.now(),
@@ -187,8 +200,12 @@ async function computeDailyStats(userId, date, limits) {
 async function getDailyStats(userId, date, limits, isToday = false) {
   if (!isToday) {
     // 캐시 조회
-    const cached = await db.collection('stats').doc(userId)
-      .collection('daily').doc(date).get();
+    const cached = await db
+      .collection("stats")
+      .doc(userId)
+      .collection("daily")
+      .doc(date)
+      .get();
     if (cached.exists) return cached.data();
   }
 
@@ -197,8 +214,12 @@ async function getDailyStats(userId, date, limits, isToday = false) {
 
   if (!isToday) {
     // 과거 날짜만 캐시에 저장 — 이후 조회부터 빠르게
-    await db.collection('stats').doc(userId)
-      .collection('daily').doc(date).set(data);
+    await db
+      .collection("stats")
+      .doc(userId)
+      .collection("daily")
+      .doc(date)
+      .set(data);
   }
 
   return data;
@@ -206,35 +227,48 @@ async function getDailyStats(userId, date, limits, isToday = false) {
 
 // ── 스크롤 배치 저장 — POST /userlogs ─────────────────────
 // Android에서 10개 누적 or 5분마다 배치 전송
-app.post('/userlogs', verifyToken, async (req, res) => {
+app.post("/userlogs", verifyToken, async (req, res) => {
   try {
-    const { userId, logId, timestamp, scrollCount, platform } = req.body;
-
+    const { userId, logId, timestamp, scrollCount, platform, deviceId } =
+      req.body;
     // 필수 필드 검증 — logId 추가됨 (중복 방지용 UUID)
     if (!userId || !logId || !timestamp || scrollCount === undefined) {
-      return res.status(400).json({ error: '필수 필드 누락' });
+      return res.status(400).json({ error: "필수 필드 누락" });
     }
 
-    if (typeof scrollCount !== 'number' || scrollCount <= 0) {
-      return res.status(400).json({ error: 'scrollCount는 양수여야 합니다' });
+    if (typeof scrollCount !== "number" || scrollCount <= 0) {
+      return res.status(400).json({ error: "scrollCount는 양수여야 합니다" });
     }
 
     // platform 검증 — youtube / instagram / tiktok만 허용
-    const validPlatforms = ['youtube', 'instagram', 'tiktok'];
+    const validPlatforms = ["youtube", "instagram", "tiktok"];
     if (platform && !validPlatforms.includes(platform)) {
-      return res.status(400).json({ error: 'platform은 youtube, instagram, tiktok 중 하나여야 합니다' });
+      return res.status(400).json({
+        error: "platform은 youtube, instagram, tiktok 중 하나여야 합니다",
+      });
     }
+
+    // [2학기] deviceId — 어느 기기의 배치인지 기록한다.
+    // GET /sync 가 "요청 기기가 아닌 기기들의 최근 1시간" 을 계산할 때 이 값으로 거른다.
+    // 1학기 앱은 이 필드를 안 보내므로 "legacy" 로 채운다 — 필수로 만들면
+    // 이미 깔려 있는 앱들이 전부 400 을 받고 스크롤이 유실된다.
+    const devId =
+      typeof deviceId === "string" && deviceId.length > 0 ? deviceId : "legacy";
 
     // logId를 Firestore 문서 ID로 사용
     // 앱이 같은 배치를 재전송해도 동일한 문서를 덮어쓰기 → 중복 집계 방지
     // 기존 add() 방식은 호출할 때마다 새 문서 생성 → 중복 저장됨
-    await db.collection('userLogs').doc(logId).set({
-      userId,
-      logId,
-      timestamp,
-      scrollCount,
-      platform: platform || 'youtube', // platform 없는 구버전 앱은 youtube로 처리
-    });
+    await db
+      .collection("userLogs")
+      .doc(logId)
+      .set({
+        userId,
+        logId,
+        timestamp,
+        scrollCount,
+        platform: platform || "youtube", // platform 없는 구버전 앱은 youtube로 처리
+        deviceId: devId,
+      });
 
     // ───── [추가] 통계 캐시 무효화 ─────
     // 이 로그가 속한 날짜(KST)의 stats 캐시를 지운다.
@@ -242,16 +276,32 @@ app.post('/userlogs', verifyToken, async (req, res) => {
     // 늦게 도착한 로그가 반영되도록 해당 날짜 캐시를 삭제 → 다음 조회 때 재계산.
     const logDateKST = toKSTDateString(timestamp);
     const todayKST = toKSTDateString(Date.now());
-    if (logDateKST !== todayKST) {       // 오늘은 어차피 캐시 안 함(실시간) → 과거 날짜만
-      await db.collection('stats').doc(userId)
-        .collection('daily').doc(logDateKST).delete();
+    if (logDateKST !== todayKST) {
+      // 오늘은 어차피 캐시 안 함(실시간) → 과거 날짜만
+      await db
+        .collection("stats")
+        .doc(userId)
+        .collection("daily")
+        .doc(logDateKST)
+        .delete();
       logger.info(`stats 캐시 무효화 — userId: ${userId}, date: ${logDateKST}`);
     }
     // ──────────────────────────────────
 
-    logger.success(`userLog 저장 완료 — userId: ${userId}, logId: ${logId}, scrollCount: ${scrollCount}, platform: ${platform || 'youtube'}`);
-    res.json({ status: 'ok' });
+    logger.success(
+      `userLog 저장 완료 — userId: ${userId}, logId: ${logId}, scrollCount: ${scrollCount}, platform: ${platform || "youtube"}, device: ${devId}`,
+    );
+    res.json({ status: "ok" });
 
+    // [2학기] 합계가 바뀌었으니, 지금 타겟 앱을 보고 있는(최근 2분 내 /sync 호출) 다른 기기에
+    // COUNT_UPDATED 를 보내 "다시 물어보라" 고 알린다. 이게 D3 2단계 동기화의 2단계.
+    //
+    // 대상을 req.userId(토큰)로 잡는 이유 — 이 핸들러는 1학기 설계상 body 의 userId 로
+    // Firestore 에 저장한다. 저장은 호환 때문에 그대로 두되, 발송까지 body 를 믿으면
+    // 남의 uid 를 적어 보내 그 사람 기기를 깨울 수 있으므로 발송만 토큰 기준으로 한다.
+    //
+    // 응답은 이미 보냈으므로 발송이 실패해도 앱에는 영향이 없다.
+    sendDataToOtherDevices(req.userId, devId, "COUNT_UPDATED");
   } catch (err) {
     logger.error(`userLog 저장 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -260,16 +310,17 @@ app.post('/userlogs', verifyToken, async (req, res) => {
 
 // user별 조회 — GET /logs/:userId
 // 특정 유저의 최근 50개 로그 반환
-app.get('/logs/:userId', verifyToken, async (req, res) => {
+app.get("/logs/:userId", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
-    const snapshot = await db.collection('userLogs')
-      .where('userId', '==', userId)
-      .orderBy('timestamp', 'desc')
+    const snapshot = await db
+      .collection("userLogs")
+      .where("userId", "==", userId)
+      .orderBy("timestamp", "desc")
       .limit(50)
       .get();
 
-    const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const logs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     res.json({ userId, count: logs.length, logs });
   } catch (err) {
     logger.error(`logs 조회 실패 — ${err.message}`);
@@ -279,18 +330,18 @@ app.get('/logs/:userId', verifyToken, async (req, res) => {
 
 // 시간 범위 조회 — GET /logs/:userId/range
 // 시작시간, 끝시간 사이 로그만 반환
-app.get('/logs/:userId/range', verifyToken, async (req, res) => {
+app.get("/logs/:userId/range", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { start, end } = req.query;
 
-    let query = db.collection('userLogs').where('userId', '==', userId);
-    if (start) query = query.where('timestamp', '>=', Number(start));
-    if (end)   query = query.where('timestamp', '<=', Number(end));
-    query = query.orderBy('timestamp', 'desc').limit(50);
+    let query = db.collection("userLogs").where("userId", "==", userId);
+    if (start) query = query.where("timestamp", ">=", Number(start));
+    if (end) query = query.where("timestamp", "<=", Number(end));
+    query = query.orderBy("timestamp", "desc").limit(50);
 
     const snapshot = await query.get();
-    const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const logs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     res.json({ userId, count: logs.length, logs });
   } catch (err) {
     logger.error(`logs 범위 조회 실패 — ${err.message}`);
@@ -303,46 +354,61 @@ app.get('/logs/:userId/range', verifyToken, async (req, res) => {
 // dailyScrollCount:  위반 시점 오늘 누적 스크롤 수
 // platform:          위반 발생 플랫폼 (youtube / instagram / tiktok / unknown)
 // 구버전 앱 호환: hourlyScrollCount/dailyScrollCount 없으면 scrollCount 로 폴백
-app.post('/violations', verifyToken, async (req, res) => {
+app.post("/violations", verifyToken, async (req, res) => {
   try {
     const {
-      userId, violationId, timestamp, limitType, action, platform,
-      hourlyScrollCount, dailyScrollCount, scrollCount,
-    } = req.body;
-
-    // 필수 필드 검증 — violationId 추가 (재전송 중복 방지용 고유 ID)
-    if (!userId || !violationId || !timestamp || !limitType || !action) {
-      return res.status(400).json({ error: '필수 필드 누락' });
-    }
-
-    if (!['hourly', 'daily'].includes(limitType)) {
-      return res.status(400).json({ error: 'limitType은 hourly 또는 daily여야 합니다' });
-    }
-
-    if (!['stop', 'ignore'].includes(action)) {
-      return res.status(400).json({ error: 'action은 stop 또는 ignore여야 합니다' });
-    }
-
-    // hourlyScrollCount/dailyScrollCount 없으면 scrollCount 로 폴백 (구버전 앱 호환)
-    const hourly = hourlyScrollCount ?? scrollCount ?? 0;
-    const daily  = dailyScrollCount  ?? scrollCount ?? 0;
-
-    // Firestore 저장 — violationId를 문서 ID로 사용해 재전송 시 중복 방지(멱등성)
-    // 앱이 재시도 큐로 같은 violation을 다시 보내도 같은 문서를 덮어쓰기 → 중복 집계 방지
-    await db.collection('violations').doc(violationId).set({
       userId,
       violationId,
       timestamp,
       limitType,
-      hourlyScrollCount: hourly,
-      dailyScrollCount:  daily,
       action,
-      platform:          platform || 'unknown',
-    });
+      platform,
+      hourlyScrollCount,
+      dailyScrollCount,
+      scrollCount,
+    } = req.body;
 
-    logger.success(`violation 저장 완료 — userId: ${userId}, limitType: ${limitType}, hourly: ${hourly}, daily: ${daily}, platform: ${platform || 'unknown'}`);
-    res.json({ status: 'ok' });
+    // 필수 필드 검증 — violationId 추가 (재전송 중복 방지용 고유 ID)
+    if (!userId || !violationId || !timestamp || !limitType || !action) {
+      return res.status(400).json({ error: "필수 필드 누락" });
+    }
 
+    if (!["hourly", "daily"].includes(limitType)) {
+      return res
+        .status(400)
+        .json({ error: "limitType은 hourly 또는 daily여야 합니다" });
+    }
+
+    if (!["stop", "ignore"].includes(action)) {
+      return res
+        .status(400)
+        .json({ error: "action은 stop 또는 ignore여야 합니다" });
+    }
+
+    // hourlyScrollCount/dailyScrollCount 없으면 scrollCount 로 폴백 (구버전 앱 호환)
+    const hourly = hourlyScrollCount ?? scrollCount ?? 0;
+    const daily = dailyScrollCount ?? scrollCount ?? 0;
+
+    // Firestore 저장 — violationId를 문서 ID로 사용해 재전송 시 중복 방지(멱등성)
+    // 앱이 재시도 큐로 같은 violation을 다시 보내도 같은 문서를 덮어쓰기 → 중복 집계 방지
+    await db
+      .collection("violations")
+      .doc(violationId)
+      .set({
+        userId,
+        violationId,
+        timestamp,
+        limitType,
+        hourlyScrollCount: hourly,
+        dailyScrollCount: daily,
+        action,
+        platform: platform || "unknown",
+      });
+
+    logger.success(
+      `violation 저장 완료 — userId: ${userId}, limitType: ${limitType}, hourly: ${hourly}, daily: ${daily}, platform: ${platform || "unknown"}`,
+    );
+    res.json({ status: "ok" });
   } catch (err) {
     logger.error(`violation 저장 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -352,20 +418,20 @@ app.post('/violations', verifyToken, async (req, res) => {
 // 일간 통계 — GET /stats/:userId/daily?date=2026-05-03
 // 오늘: 실시간 계산 / 과거: stats 캐시 우선 (없으면 계산 후 캐시 저장)
 // 응답에 hourlyLimit, platform별 집계, hourly violation 시각(HH:mm) 포함
-app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
+app.get("/stats/:userId/daily", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query;
 
     if (!date) {
-      return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
+      return res.status(400).json({ error: "date 파라미터가 필요합니다" });
     }
 
     const todayKST = toKSTDateString(Date.now());
-    const isToday  = date === todayKST;
+    const isToday = date === todayKST;
 
     // limit 가져오기 (없으면 기본값)
-    const limitsDoc = await db.collection('limits').doc(userId).get();
+    const limitsDoc = await db.collection("limits").doc(userId).get();
     const limits = limitsDoc.exists
       ? limitsDoc.data()
       : { hourlyLimit: 50, dailyLimit: 100 };
@@ -375,28 +441,27 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
     // hourlyGraph를 앱 형식으로 변환 (scrollCount > 0인 시간대만)
     const hourlyGraphArr = stats.hourlyGraph
       .map((count, hour) => ({ hour, scrollCount: count }))
-      .filter(h => h.scrollCount > 0);
+      .filter((h) => h.scrollCount > 0);
 
     res.json({
       userId,
       date,
-      totalScroll:         stats.totalScroll,
-      platform:            stats.platform,
-      byPlatform:          stats.byPlatform,          // 도넛 그래프용 (platform 과 동일값)
-      dailyLimit:          stats.dailyLimit,
-      hourlyLimit:         stats.hourlyLimit,
-      goalAchieved:        stats.goalAchieved,
-      stopCount:           stats.stopCount,
-      ignoreCount:         stats.ignoreCount,
-      peakHour:            stats.peakHour,
-      hourlyGraph:         hourlyGraphArr,
+      totalScroll: stats.totalScroll,
+      platform: stats.platform,
+      byPlatform: stats.byPlatform, // 도넛 그래프용 (platform 과 동일값)
+      dailyLimit: stats.dailyLimit,
+      hourlyLimit: stats.hourlyLimit,
+      goalAchieved: stats.goalAchieved,
+      stopCount: stats.stopCount,
+      ignoreCount: stats.ignoreCount,
+      peakHour: stats.peakHour,
+      hourlyGraph: hourlyGraphArr,
       hourlyLimitExceeded: stats.hourlyLimitExceeded,
-      hourlyViolations:    stats.hourlyViolations,    // timeKST 포함
-      violations:          stats.violations,           // 전체 violation 목록
-      dailyViolation:      stats.dailyViolation,
-      dailyViolationTime:  stats.dailyViolationTime,
+      hourlyViolations: stats.hourlyViolations, // timeKST 포함
+      violations: stats.violations, // 전체 violation 목록
+      dailyViolation: stats.dailyViolation,
+      dailyViolationTime: stats.dailyViolationTime,
     });
-
   } catch (err) {
     logger.error(`daily stats 조회 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -407,34 +472,47 @@ app.get('/stats/:userId/daily', verifyToken, async (req, res) => {
 // 자정 롤오버 시 앱(AccessibilityService)이 호출 — 어제 날짜와 그날 실제 적용됐던 limit 을 함께 전송.
 // computeDailyStats 는 현재 limits/{userId} 를 읽어 오므로, 과거 날짜 캐시가 오늘의 limit 으로
 // 덮어씌워지는 버그를 막기 위해 앱이 직접 snapshots 한 limit 을 body 로 보냄.
-app.post('/stats/:userId/daily/finalize', verifyToken, async (req, res) => {
+app.post("/stats/:userId/daily/finalize", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date, dailyLimit, hourlyLimit } = req.body;
 
     if (!date || dailyLimit == null || hourlyLimit == null) {
-      return res.status(400).json({ error: 'date, dailyLimit, hourlyLimit 필드가 필요합니다' });
+      return res
+        .status(400)
+        .json({ error: "date, dailyLimit, hourlyLimit 필드가 필요합니다" });
     }
 
     // 오늘 이후 날짜는 finalize 불가 (오늘은 아직 진행 중)
     const todayKST = toKSTDateString(Date.now());
     if (date >= todayKST) {
-      return res.status(400).json({ error: `과거 날짜만 finalize 가능합니다 (date=${date}, today=${todayKST})` });
+      return res.status(400).json({
+        error: `과거 날짜만 finalize 가능합니다 (date=${date}, today=${todayKST})`,
+      });
     }
 
     // 앱이 보내 준 어제 limit 으로 통계 계산
-    const limits = { dailyLimit: Number(dailyLimit), hourlyLimit: Number(hourlyLimit) };
-    const stats  = await computeDailyStats(userId, date, limits);
+    const limits = {
+      dailyLimit: Number(dailyLimit),
+      hourlyLimit: Number(hourlyLimit),
+    };
+    const stats = await computeDailyStats(userId, date, limits);
 
     // Firestore 캐시에 덮어쓰기 (기존 캐시가 있어도 정확한 limit 으로 갱신)
-    await db.collection('stats').doc(userId).collection('daily').doc(date).set({
-      ...stats,
-      finalizedAt: Date.now(),   // finalize 시각 (디버깅용)
-    });
+    await db
+      .collection("stats")
+      .doc(userId)
+      .collection("daily")
+      .doc(date)
+      .set({
+        ...stats,
+        finalizedAt: Date.now(), // finalize 시각 (디버깅용)
+      });
 
-    logger.info(`daily finalize 완료 — userId=${userId}, date=${date}, daily=${dailyLimit}, hourly=${hourlyLimit}`);
-    res.json({ status: 'ok', date, totalScroll: stats.totalScroll });
-
+    logger.info(
+      `daily finalize 완료 — userId=${userId}, date=${date}, daily=${dailyLimit}, hourly=${hourlyLimit}`,
+    );
+    res.json({ status: "ok", date, totalScroll: stats.totalScroll });
   } catch (err) {
     logger.error(`daily finalize 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -444,20 +522,20 @@ app.post('/stats/:userId/daily/finalize', verifyToken, async (req, res) => {
 // 주간 통계 — GET /stats/:userId/weekly?date=2026-05-03
 // stats 캐시 기반으로 전환 — userLogs 대량 스캔 없이 일별 캐시 합산
 // platform별 집계, dailyTotals(앱 히트맵용) 포함
-app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
+app.get("/stats/:userId/weekly", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query;
 
     if (!date) {
-      return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
+      return res.status(400).json({ error: "date 파라미터가 필요합니다" });
     }
 
     const todayKST = toKSTDateString(Date.now());
 
     // 이번 주 월요일 ~ date 계산 (KST 기준)
-    const refDate     = new Date(date + 'T00:00:00.000+09:00');
-    const dayOfWeek   = refDate.getUTCDay();
+    const refDate = new Date(date + "T00:00:00.000+09:00");
+    const dayOfWeek = refDate.getUTCDay();
     const daysFromMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const weekStartDate = new Date(refDate);
     weekStartDate.setUTCDate(refDate.getUTCDate() - daysFromMon);
@@ -472,51 +550,54 @@ app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
     }
 
     // limit 가져오기 (없으면 기본값)
-    const limitsDoc = await db.collection('limits').doc(userId).get();
+    const limitsDoc = await db.collection("limits").doc(userId).get();
     const limits = limitsDoc.exists
       ? limitsDoc.data()
       : { hourlyLimit: 50, dailyLimit: 100 };
 
     // 각 날짜 통계 병렬 조회 — 캐시 있으면 빠름, 없으면 계산 후 저장
     const dayStats = await Promise.all(
-      days.map(d => getDailyStats(userId, d, limits, d === todayKST))
+      days.map((d) => getDailyStats(userId, d, limits, d === todayKST)),
     );
 
     // 주간 집계
     const totalScroll = dayStats.reduce((s, d) => s + d.totalScroll, 0);
-    const platform    = { youtube: 0, instagram: 0, tiktok: 0 };
-    dayStats.forEach(d => {
-      platform.youtube   += d.platform?.youtube   || 0;
+    const platform = { youtube: 0, instagram: 0, tiktok: 0 };
+    dayStats.forEach((d) => {
+      platform.youtube += d.platform?.youtube || 0;
       platform.instagram += d.platform?.instagram || 0;
-      platform.tiktok    += d.platform?.tiktok    || 0;
+      platform.tiktok += d.platform?.tiktok || 0;
     });
 
     // 가장 많이 본 날
     const peakDay = dayStats.reduce(
-      (max, d) => d.totalScroll > (max?.totalScroll || 0) ? d : max,
-      null
+      (max, d) => (d.totalScroll > (max?.totalScroll || 0) ? d : max),
+      null,
     );
 
     // 날짜별 totals — 앱 히트맵 그리드에서 사용
     const dailyTotals = {};
-    dayStats.forEach(d => { dailyTotals[d.date] = d.totalScroll; });
+    dayStats.forEach((d) => {
+      dailyTotals[d.date] = d.totalScroll;
+    });
 
     const daysPassed = days.length;
 
     res.json({
       userId,
-      weekStart:       days[0],
-      weekEnd:         date,
+      weekStart: days[0],
+      weekEnd: date,
       totalScroll,
-      avgScrollPerDay: daysPassed > 0 ? Math.round(totalScroll / daysPassed) : 0,
+      avgScrollPerDay:
+        daysPassed > 0 ? Math.round(totalScroll / daysPassed) : 0,
       daysPassed,
       platform,
-      peakDay:         peakDay?.totalScroll > 0
-        ? { date: peakDay.date, scrollCount: peakDay.totalScroll }
-        : null,
+      peakDay:
+        peakDay?.totalScroll > 0
+          ? { date: peakDay.date, scrollCount: peakDay.totalScroll }
+          : null,
       dailyTotals,
     });
-
   } catch (err) {
     logger.error(`weekly stats 조회 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -524,21 +605,23 @@ app.get('/stats/:userId/weekly', verifyToken, async (req, res) => {
 });
 
 // limit 설정 저장 — POST /limits/:userId
-app.post('/limits/:userId', verifyToken, async (req, res) => {
+app.post("/limits/:userId", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params; // 주소에서 변수 꺼내서 userId에 저장
     const { hourlyLimit, dailyLimit } = req.body;
 
     if (hourlyLimit === undefined || dailyLimit === undefined) {
-      return res.status(400).json({ error: '필수 필드 누락' });
+      return res.status(400).json({ error: "필수 필드 누락" });
     }
 
-    if (typeof hourlyLimit !== 'number' || typeof dailyLimit !== 'number') {
-      return res.status(400).json({ error: 'hourlyLimit, dailyLimit은 숫자여야 합니다' });
+    if (typeof hourlyLimit !== "number" || typeof dailyLimit !== "number") {
+      return res
+        .status(400)
+        .json({ error: "hourlyLimit, dailyLimit은 숫자여야 합니다" });
     }
 
     // firebase 에 저장
-    await db.collection('limits').doc(userId).set({
+    await db.collection("limits").doc(userId).set({
       userId,
       hourlyLimit,
       dailyLimit,
@@ -546,8 +629,7 @@ app.post('/limits/:userId', verifyToken, async (req, res) => {
     });
 
     logger.success(`limit 저장 완료 — userId: ${userId}`);
-    res.json({ status: 'ok' });
-
+    res.json({ status: "ok" });
   } catch (err) {
     logger.error(`limit 저장 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -556,92 +638,103 @@ app.post('/limits/:userId', verifyToken, async (req, res) => {
 
 // 월간 통계 — GET /stats/:userId/monthly?date=2026-05
 // stats 캐시 기반으로 전환 — platform별 집계, stop/ignore 합산, 목표달성일 수 포함
-app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
+app.get("/stats/:userId/monthly", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query; // "2026-05"
 
     if (!date) {
-      return res.status(400).json({ error: 'date 파라미터가 필요합니다' });
+      return res.status(400).json({ error: "date 파라미터가 필요합니다" });
     }
 
-    const todayKST  = toKSTDateString(Date.now());
-    const year      = parseInt(date.slice(0, 4));
-    const month     = parseInt(date.slice(5, 7));
+    const todayKST = toKSTDateString(Date.now());
+    const year = parseInt(date.slice(0, 4));
+    const month = parseInt(date.slice(5, 7));
     const daysInMonth = new Date(year, month, 0).getDate();
 
     // 해당 달의 날짜 목록 (오늘까지만)
     const days = [];
     for (let d = 1; d <= daysInMonth; d++) {
-      const ds = `${date}-${String(d).padStart(2, '0')}`;
+      const ds = `${date}-${String(d).padStart(2, "0")}`;
       if (ds <= todayKST) days.push(ds);
     }
 
     if (days.length === 0) {
       return res.json({
-        userId, month: date,
-        totalScroll: 0, avgScrollPerDay: 0, daysPassed: 0,
-        platform:   { youtube: 0, instagram: 0, tiktok: 0 },
+        userId,
+        month: date,
+        totalScroll: 0,
+        avgScrollPerDay: 0,
+        daysPassed: 0,
+        platform: { youtube: 0, instagram: 0, tiktok: 0 },
         byPlatform: { youtube: 0, instagram: 0, tiktok: 0 },
-        peakDay: null, goalAchievedCount: 0, stopCount: 0, ignoreCount: 0,
+        peakDay: null,
+        goalAchievedCount: 0,
+        stopCount: 0,
+        ignoreCount: 0,
         dailyTotals: {},
       });
     }
 
     // limit 가져오기 (없으면 기본값)
-    const limitsDoc = await db.collection('limits').doc(userId).get();
+    const limitsDoc = await db.collection("limits").doc(userId).get();
     const limits = limitsDoc.exists
       ? limitsDoc.data()
       : { hourlyLimit: 50, dailyLimit: 100 };
 
     // 각 날짜 통계 병렬 조회 — 캐시 있으면 빠름, 없으면 계산 후 저장
     const dayStats = await Promise.all(
-      days.map(d => getDailyStats(userId, d, limits, d === todayKST))
+      days.map((d) => getDailyStats(userId, d, limits, d === todayKST)),
     );
 
     // 월간 집계
     const totalScroll = dayStats.reduce((s, d) => s + d.totalScroll, 0);
-    const platform    = { youtube: 0, instagram: 0, tiktok: 0 };
-    let stopCount = 0, ignoreCount = 0, goalAchievedCount = 0;
+    const platform = { youtube: 0, instagram: 0, tiktok: 0 };
+    let stopCount = 0,
+      ignoreCount = 0,
+      goalAchievedCount = 0;
 
-    dayStats.forEach(d => {
-      platform.youtube   += d.platform?.youtube   || 0;
+    dayStats.forEach((d) => {
+      platform.youtube += d.platform?.youtube || 0;
       platform.instagram += d.platform?.instagram || 0;
-      platform.tiktok    += d.platform?.tiktok    || 0;
-      stopCount          += d.stopCount   || 0;
-      ignoreCount        += d.ignoreCount || 0;
+      platform.tiktok += d.platform?.tiktok || 0;
+      stopCount += d.stopCount || 0;
+      ignoreCount += d.ignoreCount || 0;
       if (d.goalAchieved) goalAchievedCount++;
     });
 
     // 가장 많이 본 날
     const peakDay = dayStats.reduce(
-      (max, d) => d.totalScroll > (max?.totalScroll || 0) ? d : max,
-      null
+      (max, d) => (d.totalScroll > (max?.totalScroll || 0) ? d : max),
+      null,
     );
 
     // 날짜별 totals — 앱 히트맵 달력에서 사용
     const dailyTotals = {};
-    dayStats.forEach(d => { dailyTotals[d.date] = d.totalScroll; });
+    dayStats.forEach((d) => {
+      dailyTotals[d.date] = d.totalScroll;
+    });
 
     const daysPassed = days.length;
 
     res.json({
       userId,
-      month:           date,
+      month: date,
       totalScroll,
-      avgScrollPerDay: daysPassed > 0 ? Math.round(totalScroll / daysPassed) : 0,
+      avgScrollPerDay:
+        daysPassed > 0 ? Math.round(totalScroll / daysPassed) : 0,
       daysPassed,
       platform,
-      byPlatform:      platform,   // 도넛 그래프용 (platform 과 동일값)
-      peakDay:         peakDay?.totalScroll > 0
-        ? { date: peakDay.date, scrollCount: peakDay.totalScroll }
-        : null,
+      byPlatform: platform, // 도넛 그래프용 (platform 과 동일값)
+      peakDay:
+        peakDay?.totalScroll > 0
+          ? { date: peakDay.date, scrollCount: peakDay.totalScroll }
+          : null,
       goalAchievedCount, // 목표(dailyLimit) 달성한 날 수
       stopCount,
       ignoreCount,
       dailyTotals,
     });
-
   } catch (err) {
     logger.error(`monthly stats 조회 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -649,18 +742,17 @@ app.get('/stats/:userId/monthly', verifyToken, async (req, res) => {
 });
 
 // limit 조회 — GET /limits/:userId
-app.get('/limits/:userId', verifyToken, async (req, res) => {
+app.get("/limits/:userId", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const doc = await db.collection('limits').doc(userId).get();
+    const doc = await db.collection("limits").doc(userId).get();
 
     if (!doc.exists) {
-      return res.status(404).json({ error: 'no limit set' });
+      return res.status(404).json({ error: "no limit set" });
     }
 
     res.json({ userId, ...doc.data() }); // userId랑 doc에 있는 data 합쳐서 넣음
-
   } catch (err) {
     logger.error(`limit 조회 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -670,56 +762,62 @@ app.get('/limits/:userId', verifyToken, async (req, res) => {
 // 회원 탈퇴 — DELETE /users/:userId
 // 유저의 Firestore 데이터 전체 삭제 + Firebase Auth 계정 삭제
 // 본인 계정만 탈퇴 가능 (토큰의 uid와 요청 userId 일치 여부 확인)
-app.delete('/users/:userId', verifyToken, async (req, res) => {
+app.delete("/users/:userId", verifyToken, async (req, res) => {
   try {
     const { userId } = req.params;
 
     // 토큰에서 추출한 uid와 요청한 userId 비교
     // 다른 유저의 계정을 삭제하는 것을 방지
     if (req.userId !== userId) {
-      return res.status(403).json({ error: '본인 계정만 탈퇴할 수 있습니다' });
+      return res.status(403).json({ error: "본인 계정만 탈퇴할 수 있습니다" });
     }
 
     // Firestore — userLogs 컬렉션에서 해당 유저 문서 전체 삭제
     // 스크롤 통계 데이터 삭제
-    const userLogsSnapshot = await db.collection('userLogs')
-      .where('userId', '==', userId)
+    const userLogsSnapshot = await db
+      .collection("userLogs")
+      .where("userId", "==", userId)
       .get();
-    const deleteUserLogs = userLogsSnapshot.docs.map(doc => doc.ref.delete());
+    const deleteUserLogs = userLogsSnapshot.docs.map((doc) => doc.ref.delete());
     await Promise.all(deleteUserLogs); // 병렬 삭제로 속도 최적화
     logger.info(`userLogs 삭제 완료 — userId: ${userId}`);
 
     // Firestore — violations 컬렉션에서 해당 유저 문서 전체 삭제
     // 한도 초과 위반 기록 삭제
-    const violationsSnapshot = await db.collection('violations')
-      .where('userId', '==', userId)
+    const violationsSnapshot = await db
+      .collection("violations")
+      .where("userId", "==", userId)
       .get();
-    const deleteViolations = violationsSnapshot.docs.map(doc => doc.ref.delete());
+    const deleteViolations = violationsSnapshot.docs.map((doc) =>
+      doc.ref.delete(),
+    );
     await Promise.all(deleteViolations); // 병렬 삭제로 속도 최적화
     logger.info(`violations 삭제 완료 — userId: ${userId}`);
 
     // Firestore — limits 문서 삭제
     // hourly/daily limit 설정 삭제
-    await db.collection('limits').doc(userId).delete();
+    await db.collection("limits").doc(userId).delete();
     logger.info(`limits 삭제 완료 — userId: ${userId}`);
 
     // Firestore — stats 서브컬렉션 삭제
     // Firestore는 부모 문서 삭제 시 서브컬렉션이 자동 삭제되지 않으므로 별도 삭제 필요
-    const statsSnapshot = await db.collection('stats').doc(userId)
-      .collection('daily').get();
-    await Promise.all(statsSnapshot.docs.map(doc => doc.ref.delete()));
-    await db.collection('stats').doc(userId).delete();
+    const statsSnapshot = await db
+      .collection("stats")
+      .doc(userId)
+      .collection("daily")
+      .get();
+    await Promise.all(statsSnapshot.docs.map((doc) => doc.ref.delete()));
+    await db.collection("stats").doc(userId).delete();
     logger.info(`stats 삭제 완료 — userId: ${userId}`);
 
     // Firebase Auth — 계정 삭제
     // 삭제 후 해당 계정으로 로그인 불가능
-    const { admin } = require('./utils/firebase');
+    const { admin } = require("./utils/firebase");
     await admin.auth().deleteUser(userId);
     logger.info(`Firebase Auth 계정 삭제 완료 — userId: ${userId}`);
 
     logger.success(`회원 탈퇴 완료 — userId: ${userId}`);
-    res.json({ status: 'ok' });
-
+    res.json({ status: "ok" });
   } catch (err) {
     logger.error(`회원 탈퇴 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -729,26 +827,26 @@ app.delete('/users/:userId', verifyToken, async (req, res) => {
 // AI 통계 분석 — POST /analyze
 // 앱이 보낸 통계 프롬프트를 Gemini에 전달하고 분석 결과만 반환
 // API 키는 서버 환경변수에만 보관 — 앱에 절대 노출 안 됨
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-app.post('/analyze', verifyToken, async (req, res) => {
+app.post("/analyze", verifyToken, async (req, res) => {
   try {
     const { userId, prompt } = req.body;
 
     // 필수 필드 검증
     if (!userId || !prompt) {
-      return res.status(400).json({ error: '필수 필드 누락' });
+      return res.status(400).json({ error: "필수 필드 누락" });
     }
 
     // Gemini 클라이언트 초기화 — 환경변수에서 API 키 로드
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     // 프롬프트가 최근 14일 통계라 길 수 있음 → 60초 타임아웃
     const result = await Promise.race([
       model.generateContent(prompt),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('AI 응답 타임아웃')), 60000)
+        setTimeout(() => reject(new Error("AI 응답 타임아웃")), 60000),
       ),
     ]);
 
@@ -757,7 +855,6 @@ app.post('/analyze', verifyToken, async (req, res) => {
 
     logger.success(`AI 분석 완료 — userId: ${userId}`);
     res.json({ analysis });
-
   } catch (err) {
     logger.error(`AI 분석 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -765,10 +862,10 @@ app.post('/analyze', verifyToken, async (req, res) => {
 });
 
 // ── 예외 처리 ──────────────────────────────────────────────
-process.on('uncaughtException', (err) => {
-  logger.error('uncaughtException:', err.message);
+process.on("uncaughtException", (err) => {
+  logger.error("uncaughtException:", err.message);
 });
 
-process.on('unhandledRejection', (reason) => {
-  logger.error('unhandledRejection:', reason);
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandledRejection:", reason);
 });
