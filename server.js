@@ -80,6 +80,7 @@ const { verifyToken } = require("./middleware/auth");
 const { sendDataToOtherDevices } = require("./utils/fcm");
 app.use(require("./routes/devices").router);
 app.use(require("./routes/sync").router);
+app.use(require("./routes/intervention").router);
 
 // ══════════════════════════════════════════════════════════════
 // Stats 캐시 헬퍼

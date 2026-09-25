@@ -77,16 +77,30 @@ async function computeCounts(userId, deviceId, now) {
 async function readInterventionState(userId, dateKST) {
   const doc = await db.collection("users").doc(userId).get();
   const d = doc.exists ? doc.data() : {}; // 문서 없으면 빈 객체로 취급
-  const ms = d.lastShownMilestone || {};
+  const shown = d.lastShownMilestone || {};
+  const answered = d.lastAnsweredMilestone || {};
 
   // daily 마일스톤은 "오늘 몇 개에서 팝업 띄웠나" 라서 날짜가 바뀌면 의미가 없다.
-  const daily = d.milestoneDate === dateKST ? (ms.daily ?? -1) : -1;
+  // 저장된 날짜와 오늘이 다르면 shown·answered 둘 다 -1 로 내려보낸다.
+  const sameDay = d.milestoneDate === dateKST;
 
   // 이미 지난 차단은 내려보내지 않는다.
   let blockUntil = d.blockUntil ?? null;
   if (blockUntil !== null && blockUntil <= Date.now()) blockUntil = null;
 
-  return { blockUntil, lastShownMilestone: { hourly: ms.hourly ?? -1, daily } };
+  return {
+    blockUntil,
+    // shown — 아직 팝업을 안 띄운 기기가 같은 단계를 새로 띄우지 않게 (억제)
+    lastShownMilestone: {
+      hourly: shown.hourly ?? -1,
+      daily: sameDay ? (shown.daily ?? -1) : -1,
+    },
+    // answered — 이미 팝업이 떠 있는 기기가 그걸 닫게 (해제). 9/23 추가
+    lastAnsweredMilestone: {
+      hourly: answered.hourly ?? -1,
+      daily: sameDay ? (answered.daily ?? -1) : -1,
+    },
+  };
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -138,7 +152,8 @@ router.get("/sync", verifyToken, async (req, res) => {
       otherDevicesLastHour: counts.otherDevicesLastHour, // 앱: 로컬 1시간 윈도우에 "더하기"
       deviceCount, // 앱: 2 이상이면 배치 주기 1분
       blockUntil: state.blockUntil, // 앱: 남은 시간만큼 차단 (3주차)
-      lastShownMilestone: state.lastShownMilestone, // 앱: 같은 팝업 생략 (3주차)
+      lastShownMilestone: state.lastShownMilestone, // 앱: 같은 팝업을 새로 띄우지 않기
+      lastAnsweredMilestone: state.lastAnsweredMilestone, // 앱: 떠 있는 팝업 닫기
     });
 
     logger.info(

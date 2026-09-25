@@ -1,4 +1,10 @@
 serviceAccountKey.json
 node_modules
 .env
+.DS_Storesend-test-push.js
+
 .DS_Store
+send-test-push.js
+serviceAccountKey.json
+.env
+.env.test
