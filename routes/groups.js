@@ -37,6 +37,13 @@ const express = require("express");
 const { db, admin } = require("../utils/firebase");
 const logger = require("../utils/logger");
 const { verifyToken } = require("../middleware/auth");
+// 표시 이름은 users/{uid}.nickname 한 곳에만 저장하고 읽을 때 합친다.
+// (멤버 문서에 박아두면 닉네임 변경 시 가입한 그룹 수만큼 고쳐야 함)
+const {
+  saveNickname,
+  resolveDisplayName,
+  resolveDisplayNames,
+} = require("../utils/nickname");
 
 const router = express.Router();
 
@@ -113,19 +120,6 @@ function validateCreate(body) {
   return null;
 }
 
-// 구글 계정 이름을 서버가 직접 꺼낸다 (앱 변경 없음 — 9/22 합의).
-// 이름이 없는 계정도 있어서 이메일 앞부분 → "이름 없음" 순으로 대체한다.
-async function resolveDisplayName(uid) {
-  try {
-    const user = await admin.auth().getUser(uid);
-    if (user.displayName) return user.displayName;
-    if (user.email) return user.email.split("@")[0];
-  } catch (err) {
-    logger.error(`displayName 조회 실패 — uid: ${uid}, ${err.message}`);
-  }
-  return "이름 없음";
-}
-
 // 앱에 내려보낼 그룹 요약 형태
 function toGroupSummary(doc) {
   const d = doc.data();
@@ -154,9 +148,16 @@ router.post("/groups", verifyToken, async (req, res) => {
     const bad = validateCreate(req.body);
     if (bad) return res.status(400).json(bad);
 
-    const { name, description, goal, approvalRate, maxMembers } = req.body;
+    const { name, description, goal, approvalRate, maxMembers, nickname } =
+      req.body;
     const now = Date.now();
-    const displayName = await resolveDisplayName(userId);
+
+    // 앱이 nickname 을 보내면 users/{uid}.nickname 에 저장하고 그 값을 쓴다.
+    // 안 보냈거나 형식이 이상하면 저장된 닉네임 → 구글 이름 → 이메일 앞부분 순.
+    // 닉네임이 이상하다고 그룹 생성을 400 으로 막지는 않는다.
+    const displayName =
+      (await saveNickname(userId, nickname)) ||
+      (await resolveDisplayName(userId));
 
     const gRef = groupsRef().doc(); // 문서 ID 자동 생성
     const batch = db.batch();
@@ -182,6 +183,7 @@ router.post("/groups", verifyToken, async (req, res) => {
       // 3단계 랭킹용 캐시 자리. 지금은 0 — 앱이 null 을 만나 터지지 않게 미리 만들어 둔다.
       todayCount: 0,
       lastHourCount: 0,
+      lastScrollAt: null,
       countsUpdatedAt: now,
       lastSeenAt: now,
     });
@@ -264,15 +266,28 @@ router.get("/groups/:gid", verifyToken, async (req, res) => {
     }
 
     const snap = await membersRef(gid).get();
+
+    // 표시 이름은 읽는 시점에 users/{uid}.nickname 에서 합친다.
+    // 멤버 문서의 displayName 은 nickname 이 없을 때 쓰는 예비값 (1단계에 만들어진 옛 데이터).
+    const ids = [];
+    const fallbacks = {};
+    snap.forEach((doc) => {
+      ids.push(doc.id);
+      const prev = doc.data().displayName;
+      if (prev && prev !== "이름 없음") fallbacks[doc.id] = prev;
+    });
+    const names = await resolveDisplayNames(ids, fallbacks);
+
     const members = [];
     snap.forEach((doc) => {
       const m = doc.data();
       members.push({
         userId: doc.id,
-        displayName: m.displayName || "이름 없음",
+        displayName: names.get(doc.id) || "이름 없음",
         joinedAt: m.joinedAt ?? null,
         todayCount: m.todayCount ?? 0,
         lastHourCount: m.lastHourCount ?? 0,
+        lastScrollAt: m.lastScrollAt ?? null, // 3단계 캐시. 그전까지는 null
         countsUpdatedAt: m.countsUpdatedAt ?? null,
         lastSeenAt: m.lastSeenAt ?? null,
         permissionsOk: m.permissionsOk ?? null,

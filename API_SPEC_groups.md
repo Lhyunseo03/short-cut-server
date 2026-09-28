@@ -15,7 +15,7 @@
 |---|---|
 | 목표 필드명 | `goal { dailyLimit, hourlyLimit }` (`daily`/`hourly` 아님) |
 | 계산 위치 | **서버는 숫자만.** `rank`·`isOverDaily`·`isOverHourly`·`lastSeenText` 는 앱이 계산 |
-| 닉네임 | 서버가 Firebase 계정의 구글 이름에서 꺼냄. **앱은 아무것도 안 보냄** |
+| 닉네임 | **앱이 `nickname` 을 보냄** → `users/{uid}.nickname` 에 저장. 없을 때만 구글 이름으로 폴백 (9/28 변경) |
 | 관리자 | **없음** (G9). 권한 검사는 "그 그룹의 멤버인가" 하나뿐 |
 
 ---
@@ -45,7 +45,16 @@ groups/{gid}/members/{userId}
 
 users/{uid}
   groupIds  string[]   내가 속한 그룹 ID. arrayUnion/arrayRemove 로만 변경
+  nickname  string     표시 이름 1~20자. POST /devices/register · POST /groups ·
+                       POST /groups/join 이 받아서 저장 (9/28 추가)
 ```
+
+**닉네임을 `users` 문서에 두는 이유** — 멤버 문서에 이름을 박아두면 닉네임을 바꿨을 때 가입한 모든 그룹의 멤버 문서를 고쳐야 한다. 그룹 수만큼 쓰기가 늘고, 중간에 실패하면 그룹마다 다른 이름이 보인다. `users` 한 곳에만 두고 **읽을 때 합치면** 쓰기는 한 번이고 항상 일관된다. 상세 응답의 `displayName` 은 매 요청마다 이렇게 계산된다.
+
+**표시 이름 우선순위**
+`users/{uid}.nickname` → 멤버 문서의 `displayName`(1단계에 만들어진 옛 데이터) → 구글 계정 이름 → 이메일 앞부분 → `"이름 없음"`
+
+`nickname` 이 빈 문자열·공백뿐·20자 초과면 **무시하고 기존 값을 유지한다. 400 을 내지 않는다** — 닉네임 때문에 그룹 생성이 실패하면 사용자가 원인을 알기 어렵기 때문.
 
 **`groupIds` 를 쓰는 이유** — `collectionGroup('members').where('userId','==',uid)` 로도 되지만 복합 색인을 따로 등록해야 한다. 한 사람이 드는 그룹은 많아야 몇 개라 배열 하나로 충분하고, 색인이 필요 없다.
 
@@ -62,10 +71,11 @@ users/{uid}
   "description": "같이 줄여봐요",
   "goal": { "dailyLimit": 200, "hourlyLimit": 60 },
   "approvalRate": 60,
-  "maxMembers": 10
+  "maxMembers": 10,
+  "nickname": "현서"
 }
 ```
-`description`, `maxMembers` 는 선택. `maxMembers` 기본값 10.
+`description`, `maxMembers`, `nickname` 은 선택. `maxMembers` 기본값 10.
 
 **201 응답**
 ```json
@@ -129,6 +139,7 @@ users/{uid}
       "joinedAt": 1758800000000,
       "todayCount": 0,
       "lastHourCount": 0,
+      "lastScrollAt": null,
       "countsUpdatedAt": 1758800000000,
       "lastSeenAt": 1758800000000,
       "permissionsOk": null,
@@ -140,6 +151,10 @@ users/{uid}
 ```
 
 멤버는 **가입순**으로 내려간다. 순위 정렬은 앱이 한다.
+
+**`todayCount` · `lastHourCount` · `lastScrollAt` 는 3단계(10/13~)에 채운다.** 1단계·2단계 동안은 각각 `0` · `0` · `null` 로 고정이다. 필드 자체는 지금부터 내려보내므로 앱이 null 을 만나 터지지 않는다. 그때까지 앱은 **자기 행만 로컬 값으로** 표시하면 된다.
+
+이 값들을 지금 실시간으로 계산하지 않는 이유 — 10명 × 30초 폴링이면 분당 20회 집계가 되고, `userLogs` 를 매번 스캔하면 NFR 의 "응답 2초 이내"를 못 지킨다. 3단계에서 `/userlogs` 가 들어올 때 `members/{userId}` 에 카운트를 **써 두고**, 조회는 읽기만 하게 바꾼다.
 
 | 상태 | 언제 |
 |---|---|

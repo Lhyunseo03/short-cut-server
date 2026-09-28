@@ -11,6 +11,9 @@
 //   lastSyncAt    마지막 GET /sync 시각 — COUNT_UPDATED 수신 자격 판단(최근 2분)
 //   loggedOutAt   로그아웃 시각. null 이면 로그인 상태
 //
+// ※ nickname 은 기기가 아니라 사용자 속성이라 여기 저장하지 않는다.
+//    register 요청으로 받되 users/{uid}.nickname 에 쓴다 (utils/nickname.js).
+//
 // ※ 로그아웃해도 문서를 지우지 않고 시각만 찍는다.
 //    G11 의 "Logged out (9/11 23:41)" 표시에 그 시각이 필요하기 때문.
 //    문서가 실제로 사라지는 건 사용자가 설정에서 직접 삭제할 때뿐.
@@ -20,6 +23,9 @@ const express = require("express");
 const { db } = require("../utils/firebase");
 const logger = require("../utils/logger");
 const { verifyToken } = require("../middleware/auth");
+// 표시 이름은 users/{uid}.nickname 한 곳에 저장한다 (2026-09-28 정은 요청).
+// 앱이 로그인 직후 register 를 부르면서 같이 보내므로 여기서 받아 둔다.
+const { saveNickname } = require("../utils/nickname");
 
 const router = express.Router();
 
@@ -70,15 +76,14 @@ router.post("/devices/register", verifyToken, async (req, res) => {
   try {
     // body 의 userId 를 믿지 않는다 — 토큰에서 꺼낸 값만 쓴다.
     const userId = req.userId;
-    const { deviceId, deviceName, fcmToken, permissionsOk } = req.body;
+    const { deviceId, deviceName, fcmToken, permissionsOk, nickname } =
+      req.body;
 
     // ── 입력 검증 ──
     if (!isValidDeviceId(deviceId)) {
-      return res
-        .status(400)
-        .json({
-          error: "deviceId 형식이 잘못되었습니다 (영문/숫자/-/_ 8~64자)",
-        });
+      return res.status(400).json({
+        error: "deviceId 형식이 잘못되었습니다 (영문/숫자/-/_ 8~64자)",
+      });
     }
     // fcmToken 은 없어도 됨(토큰 아직 못 받은 상태). 단, 오면 문자열이어야 함.
     if (
@@ -116,6 +121,10 @@ router.post("/devices/register", verifyToken, async (req, res) => {
     // merge: true — 보낸 필드만 갱신하고 나머지는 그대로 둔다.
     // 이게 없으면 fcmToken 만 보내는 onNewToken 호출 때 deviceName 이 날아간다.
     await ref.set(data, { merge: true });
+
+    // 닉네임은 기기가 아니라 사용자 것이므로 users/{uid} 에 저장한다.
+    // 안 보냈거나 형식이 이상하면 아무것도 쓰지 않는다 (기존 값 보존).
+    await saveNickname(userId, nickname);
 
     const deviceCount = await countActiveDevices(userId);
     logger.success(
