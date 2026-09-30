@@ -150,7 +150,9 @@ payload 예: `{ "type": "FLUSH", "sentAt": "1758000000000" }` (FCM data 값은 �
   "deviceCount": 2,
   "blockUntil": null,
   "lastShownMilestone": { "hourly": -1, "daily": -1 },
-  "lastAnsweredMilestone": { "hourly": -1, "daily": -1 }
+  "lastAnsweredMilestone": { "hourly": -1, "daily": -1 },
+  "lastShownMilestoneAt": { "hourly": null, "daily": null },
+  "lastAnsweredMilestoneAt": { "hourly": null, "daily": null }
 }
 ```
 
@@ -164,6 +166,10 @@ payload 예: `{ "type": "FLUSH", "sentAt": "1758000000000" }` (FCM data 값은 �
 
 부수 효과: 요청 기기의 `lastSyncAt` 갱신 + 다른 기기에 `FLUSH` 발송.
 3주차부터 `blockUntil`·`lastShownMilestone`·`lastAnsweredMilestone` 에 실제 값이 들어간다.
+
+**`...At` (2026-09-30 추가)** — 각 마일스톤이 **언제 찍힌 값인지**(Unix ms). 앱이 "시간당은 1시간 안, 일간은 오늘 것만" 걸러 쓰는 데 쓴다. 값이 `-1` 이거나 만료됐으면 `null`.
+
+**시간당 자동 만료 (2026-09-30 추가)** — 서버는 `lastShownMilestoneAt.hourly` 가 **1시간을 넘으면 그 단계를 `-1` 로 내려보낸다**(`lastAnsweredMilestone` 도 동일). 시간당 윈도우가 롤링 1시간이라, 1시간 전에 찍힌 단계는 그 근거가 된 스크롤이 이미 윈도우에서 빠졌다는 뜻이다. 앱도 같은 판단을 하지만 서버가 먼저 걸러 다른 클라이언트에서 같은 결함이 재발하지 않게 한다.
 
 **한도 검사(앱, D5)**: 값을 적용한 직후에도 `≥`로 한도 검사. 여러 마일스톤을 건너뛰면 팝업 1번 + 마일스톤을 현재 단계로.
 
@@ -203,7 +209,9 @@ Stop(그만보기) 누른 직후.
 2. 사용자가 **답했을 때**(Stop·계속보기) → `answered: true`
 3. 시간당 단계가 **리셋**됐을 때 → `{ "hourly": -1 }` (shown·answered 둘 다 -1 로)
 
-**갱신 규칙** — 같은 종류는 **더 큰 값으로만** 올라간다(max). 늦게 도착한 옛 값이 되돌리지 못하게. `-1` 은 리셋이라 `answered` 여부와 무관하게 둘 다 -1 이 된다. `daily` 는 KST 날짜가 바뀌면 서버가 -1 로 내려보낸다.
+**갱신 규칙 (2026-09-30 변경)** — **마지막으로 보낸 값을 그대로 저장한다 (last-write-wins).** 보내지 않은 종류는 건드리지 않는다. `-1` 은 리셋이라 `answered` 여부와 무관하게 shown·answered 둘 다 -1 이 되고, 그때 `...At` 은 `null` 이 된다. `daily` 는 KST 날짜가 바뀌면 서버가 -1 로 내려보낸다.
+
+> **왜 max 를 버렸나** — 처음엔 네트워크 지연으로 옛 값이 늦게 도착해도 되돌아가지 않게 `max` 로 저장했다. 그런데 앱은 **팝업을 띄웠을 때와 리셋될 때만** 보내므로 마지막 값이 곧 현재 단계이고, 순서가 뒤집힐 일이 없다. max 때문에 아침에 한 번 찍힌 50 이 하루 종일 눌러앉아, 오후에 카운트 40 인 기기가 40 을 올려도 `/sync` 가 계속 50 을 돌려주었다. 앱은 "지금 단계보다 큰 값"을 낡은 것으로 버리므로 같은 팝업이 반복해서 떴다. (2026-09-30 실기기 로그로 확정)
 
 응답
 
@@ -211,7 +219,9 @@ Stop(그만보기) 누른 직후.
 {
   "status": "ok",
   "lastShownMilestone": { "hourly": 60, "daily": -1 },
-  "lastAnsweredMilestone": { "hourly": 60, "daily": -1 }
+  "lastAnsweredMilestone": { "hourly": 60, "daily": -1 },
+  "lastShownMilestoneAt": { "hourly": 1790600000000, "daily": null },
+  "lastAnsweredMilestoneAt": { "hourly": 1790600000000, "daily": null }
 }
 ```
 
@@ -251,9 +261,11 @@ GuardService에서 **기기별 10분마다**.
 ```
 users/{uid}
   blockUntil: number|null
-  lastShownMilestone:    { hourly: number, daily: number }   // -1 = 미발생, 팝업이 "뜬" 단계
-  lastAnsweredMilestone: { hourly: number, daily: number }   // -1 = 미발생, 사용자가 "답한" 단계
-  milestoneDate: "YYYY-MM-DD"                                // daily 리셋 판단용
+  lastShownMilestone:      { hourly: number, daily: number }        // -1 = 미발생, 팝업이 "뜬" 단계
+  lastAnsweredMilestone:   { hourly: number, daily: number }        // -1 = 미발생, 사용자가 "답한" 단계
+  lastShownMilestoneAt:    { hourly: ms|null, daily: ms|null }      // 위 값이 찍힌 시각 (9/30 추가)
+  lastAnsweredMilestoneAt: { hourly: ms|null, daily: ms|null }      // 〃
+  milestoneDate: "YYYY-MM-DD"                                       // daily 리셋 판단용
   devices/{deviceId}
     deviceId, deviceName, fcmToken|null, permissionsOk,
     registeredAt, lastSeenAt, lastSyncAt, loggedOutAt|null

@@ -35,18 +35,33 @@ function userRef(userId) {
   return db.collection("users").doc(userId);
 }
 
-// 마일스톤 갱신 규칙 — "더 큰 값으로만" 올리고, -1 이 오면 리셋한다.
-//   prev: 저장돼 있던 값, next: 앱이 보낸 값
-//   next 가 undefined/null 이면 이번 요청은 그 종류를 건드리지 않는다는 뜻 → prev 유지
-//   next 가 -1 이면 명시적 리셋 (시간당 윈도우가 회복돼 다음 초과에 다시 떠야 할 때)
-//   그 외에는 max — 네트워크 지연으로 옛 값이 늦게 도착해도 되돌아가지 않게
-function mergeMilestone(prev, next) {
-  if (next === undefined || next === null) return prev ?? -1;
-  const n = Number(next);
-  if (!Number.isFinite(n)) return prev ?? -1;
-  if (n === -1) return -1; // 리셋
-  return Math.max(prev ?? -1, n);
+// 시간당 마일스톤의 유효 기간 — 마지막 기록에서 1시간.
+// 시간당 윈도우가 롤링 1시간이라, 1시간 전에 찍힌 단계는 그 근거가 된 스크롤이
+// 이미 윈도우에서 빠졌다는 뜻이다. 그래서 읽을 때 -1 로 내려보낸다.
+const HOURLY_TTL_MS = 60 * 60 * 1000;
+
+// 앱이 보낸 값을 숫자로 정리한다. 안 보냈거나 숫자가 아니면 null(= 건드리지 않음).
+function parseMilestone(v) {
+  if (v === undefined || v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
+
+// ─────────────────────────────────────────────────────────────
+// 저장 규칙 — **마지막으로 보낸 값을 그대로 쓴다 (last-write-wins).**
+//
+// 처음엔 max 로 만들었다. 네트워크 지연으로 옛 값이 늦게 도착해도 되돌아가지
+// 않게 하려던 것이었다. 그런데 그게 결함의 원인이었다 (2026-09-30 정은 확인):
+//
+//   앱은 "팝업을 띄웠을 때"와 "리셋될 때"만 /milestone 을 보낸다.
+//   즉 **마지막으로 보낸 값이 곧 현재 단계**다. 순서가 뒤집힐 일이 없다.
+//   그런데 max 라서, 아침에 한 번 찍힌 50 이 하루 종일 눌러앉는다.
+//   오후에 카운트 40 인 기기가 40 을 올려도 /sync 는 계속 50 을 돌려주고,
+//   앱은 "지금 단계보다 큰 값"을 낡은 것으로 버려서 같은 팝업이 또 뜬다.
+//
+// 그래서 max 를 버리고 마지막 값을 그대로 저장한다. -1 도 그대로.
+// 대신 "언제 찍힌 값인가"를 같이 저장해서(...At), 오래된 값은 읽을 때 걸러낸다.
+// ─────────────────────────────────────────────────────────────
 
 // ═════════════════════════════════════════════════════════════
 // POST /block  { deviceId, blockUntil }
@@ -120,44 +135,63 @@ router.post("/milestone", verifyToken, async (req, res) => {
         .json({ error: "answered 는 boolean 이어야 합니다" });
     }
 
-    const todayKST = toKSTDateString(Date.now());
+    const now = Date.now();
+    const todayKST = toKSTDateString(now);
 
     const doc = await userRef(userId).get();
     const d = doc.exists ? doc.data() : {};
     const shownPrev = d.lastShownMilestone || {};
     const ansPrev = d.lastAnsweredMilestone || {};
+    const shownAtPrev = d.lastShownMilestoneAt || {};
+    const ansAtPrev = d.lastAnsweredMilestoneAt || {};
 
     // 저장된 daily 값이 어제 것이면 이미 의미가 없다 → -1 에서 새로 시작
     const sameDay = d.milestoneDate === todayKST;
-    const shownDailyPrev = sameDay ? shownPrev.daily : -1;
-    const ansDailyPrev = sameDay ? ansPrev.daily : -1;
 
     const shown = {
-      hourly: mergeMilestone(shownPrev.hourly, hourly),
-      daily: mergeMilestone(shownDailyPrev, daily),
+      hourly: shownPrev.hourly ?? -1,
+      daily: sameDay ? (shownPrev.daily ?? -1) : -1,
+    };
+    const ans = {
+      hourly: ansPrev.hourly ?? -1,
+      daily: sameDay ? (ansPrev.daily ?? -1) : -1,
+    };
+    const shownAt = {
+      hourly: shownAtPrev.hourly ?? null,
+      daily: sameDay ? (shownAtPrev.daily ?? null) : null,
+    };
+    const ansAt = {
+      hourly: ansAtPrev.hourly ?? null,
+      daily: sameDay ? (ansAtPrev.daily ?? null) : null,
     };
 
-    // answered 는 true 일 때만 올라간다.
-    // 단 -1(리셋)은 answered 여부와 무관하게 따라가야 한다 —
-    // 안 그러면 시간당이 회복된 뒤 같은 단계를 다시 넘었을 때
-    // "이미 답한 단계"로 잡혀서 팝업이 영영 안 뜬다.
-    const ans = {
-      hourly: answered
-        ? mergeMilestone(ansPrev.hourly, hourly)
-        : Number(hourly) === -1
-          ? -1
-          : (ansPrev.hourly ?? -1),
-      daily: answered
-        ? mergeMilestone(ansDailyPrev, daily)
-        : Number(daily) === -1
-          ? -1
-          : (ansDailyPrev ?? -1),
-    };
+    // 보낸 종류만 갱신한다. 안 보낸 종류는 위에서 읽어둔 값 그대로.
+    for (const [kind, raw] of [
+      ["hourly", hourly],
+      ["daily", daily],
+    ]) {
+      const v = parseMilestone(raw);
+      if (v === null) continue;
+
+      // shown 은 언제나 마지막 값으로 (max 아님 — 위 주석 참고)
+      shown[kind] = v;
+      shownAt[kind] = v === -1 ? null : now;
+
+      // answered 는 사용자가 답했을 때만.
+      // 단 -1(리셋)은 answered 여부와 무관하게 따라간다 — 안 그러면 시간당이
+      // 회복된 뒤 같은 단계를 다시 넘었을 때 "이미 답한 단계"로 잡혀 팝업이 영영 안 뜬다.
+      if (answered || v === -1) {
+        ans[kind] = v;
+        ansAt[kind] = v === -1 ? null : now;
+      }
+    }
 
     await userRef(userId).set(
       {
         lastShownMilestone: shown,
         lastAnsweredMilestone: ans,
+        lastShownMilestoneAt: shownAt,
+        lastAnsweredMilestoneAt: ansAt,
         milestoneDate: todayKST,
       },
       { merge: true },
@@ -171,6 +205,8 @@ router.post("/milestone", verifyToken, async (req, res) => {
       status: "ok",
       lastShownMilestone: shown,
       lastAnsweredMilestone: ans,
+      lastShownMilestoneAt: shownAt,
+      lastAnsweredMilestoneAt: ansAt,
     });
 
     // 응답일 때만 다른 기기를 깨운다.
@@ -258,4 +294,6 @@ router.post("/logout", verifyToken, async (req, res) => {
   }
 });
 
-module.exports = { router };
+// HOURLY_TTL_MS 는 sync.js 도 쓴다 (읽을 때 만료된 시간당 단계를 -1 로 내리기 위해).
+// 두 곳에 같은 숫자를 적으면 한쪽만 고쳐서 어긋나므로 여기서 내보낸다.
+module.exports = { router, HOURLY_TTL_MS };

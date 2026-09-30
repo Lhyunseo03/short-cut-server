@@ -12,6 +12,8 @@ const logger = require("../utils/logger");
 const { verifyToken } = require("../middleware/auth");
 const { sendDataToOtherDevices } = require("../utils/fcm");
 const { toKSTDateString, startOfKSTDay } = require("../utils/time");
+// 시간당 마일스톤 유효 기간 — intervention.js 와 같은 값을 써야 하므로 가져다 쓴다
+const { HOURLY_TTL_MS } = require("./intervention");
 const {
   isValidDeviceId,
   countActiveDevices,
@@ -79,26 +81,57 @@ async function readInterventionState(userId, dateKST) {
   const d = doc.exists ? doc.data() : {}; // 문서 없으면 빈 객체로 취급
   const shown = d.lastShownMilestone || {};
   const answered = d.lastAnsweredMilestone || {};
+  const shownAt = d.lastShownMilestoneAt || {};
+  const answeredAt = d.lastAnsweredMilestoneAt || {};
 
   // daily 마일스톤은 "오늘 몇 개에서 팝업 띄웠나" 라서 날짜가 바뀌면 의미가 없다.
   // 저장된 날짜와 오늘이 다르면 shown·answered 둘 다 -1 로 내려보낸다.
   const sameDay = d.milestoneDate === dateKST;
 
+  const now = Date.now();
+
+  // 시간당 단계는 마지막 기록에서 1시간이 지나면 만료다 (2026-09-30 추가).
+  // 시간당 윈도우가 롤링 1시간이라, 1시간 전에 찍힌 단계는 그 근거가 된 스크롤이
+  // 이미 윈도우에서 빠졌다는 뜻 → 그 단계를 다시 넘으면 팝업이 다시 떠야 한다.
+  // 이게 없으면 아침에 찍힌 값이 하루 종일 남아 오후 팝업을 막는다 (결함 원인).
+  //
+  // 앱도 같은 판단을 하지만(시각을 같이 내려보내므로), 서버가 먼저 걸러
+  // 다른 클라이언트가 붙어도 같은 결함이 재발하지 않게 한다.
+  function freshHourly(value, at) {
+    if (value === undefined || value === null) return -1;
+    if (value === -1) return -1;
+    if (typeof at !== "number") return -1; // 시각을 모르면 믿지 않는다
+    return now - at > HOURLY_TTL_MS ? -1 : value;
+  }
+  function freshHourlyAt(value, at) {
+    return freshHourly(value, at) === -1 ? null : at;
+  }
+
   // 이미 지난 차단은 내려보내지 않는다.
   let blockUntil = d.blockUntil ?? null;
-  if (blockUntil !== null && blockUntil <= Date.now()) blockUntil = null;
+  if (blockUntil !== null && blockUntil <= now) blockUntil = null;
 
   return {
     blockUntil,
     // shown — 아직 팝업을 안 띄운 기기가 같은 단계를 새로 띄우지 않게 (억제)
     lastShownMilestone: {
-      hourly: shown.hourly ?? -1,
+      hourly: freshHourly(shown.hourly, shownAt.hourly),
       daily: sameDay ? (shown.daily ?? -1) : -1,
     },
     // answered — 이미 팝업이 떠 있는 기기가 그걸 닫게 (해제). 9/23 추가
     lastAnsweredMilestone: {
-      hourly: answered.hourly ?? -1,
+      hourly: freshHourly(answered.hourly, answeredAt.hourly),
       daily: sameDay ? (answered.daily ?? -1) : -1,
+    },
+    // 각 값이 언제 찍혔는지 (2026-09-30 추가) — 앱이 "시간당은 1시간 안,
+    // 일간은 오늘 것만" 걸러 쓰는 데 필요하다. 만료·미기록이면 null.
+    lastShownMilestoneAt: {
+      hourly: freshHourlyAt(shown.hourly, shownAt.hourly),
+      daily: sameDay ? (shownAt.daily ?? null) : null,
+    },
+    lastAnsweredMilestoneAt: {
+      hourly: freshHourlyAt(answered.hourly, answeredAt.hourly),
+      daily: sameDay ? (answeredAt.daily ?? null) : null,
     },
   };
 }
@@ -154,6 +187,9 @@ router.get("/sync", verifyToken, async (req, res) => {
       blockUntil: state.blockUntil, // 앱: 남은 시간만큼 차단 (3주차)
       lastShownMilestone: state.lastShownMilestone, // 앱: 같은 팝업을 새로 띄우지 않기
       lastAnsweredMilestone: state.lastAnsweredMilestone, // 앱: 떠 있는 팝업 닫기
+      // 각 값이 찍힌 시각 (2026-09-30 추가). 만료됐거나 기록이 없으면 null.
+      lastShownMilestoneAt: state.lastShownMilestoneAt,
+      lastAnsweredMilestoneAt: state.lastAnsweredMilestoneAt,
     });
 
     logger.info(
