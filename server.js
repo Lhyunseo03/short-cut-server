@@ -68,7 +68,7 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 // ── 조회 API ───────────────────────────────────────────────
 const { db } = require("./utils/firebase");
 // Firebase Auth 토큰 검증 미들웨어 import
-const { verifyToken } = require("./middleware/auth");
+const { verifyToken, verifySelf } = require("./middleware/auth");
 
 // ── 2학기 다중 기기 동기화 (D1~D6) ─────────────────────────
 // 라우트를 파일로 분리했다. server.js 가 이미 800줄이라 여기에 더 붙이면
@@ -312,7 +312,7 @@ app.post("/userlogs", verifyToken, async (req, res) => {
 
 // user별 조회 — GET /logs/:userId
 // 특정 유저의 최근 50개 로그 반환
-app.get("/logs/:userId", verifyToken, async (req, res) => {
+app.get("/logs/:userId", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
     const snapshot = await db
@@ -332,7 +332,7 @@ app.get("/logs/:userId", verifyToken, async (req, res) => {
 
 // 시간 범위 조회 — GET /logs/:userId/range
 // 시작시간, 끝시간 사이 로그만 반환
-app.get("/logs/:userId/range", verifyToken, async (req, res) => {
+app.get("/logs/:userId/range", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
     const { start, end } = req.query;
@@ -420,7 +420,7 @@ app.post("/violations", verifyToken, async (req, res) => {
 // 일간 통계 — GET /stats/:userId/daily?date=2026-05-03
 // 오늘: 실시간 계산 / 과거: stats 캐시 우선 (없으면 계산 후 캐시 저장)
 // 응답에 hourlyLimit, platform별 집계, hourly violation 시각(HH:mm) 포함
-app.get("/stats/:userId/daily", verifyToken, async (req, res) => {
+app.get("/stats/:userId/daily", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query;
@@ -474,57 +474,62 @@ app.get("/stats/:userId/daily", verifyToken, async (req, res) => {
 // 자정 롤오버 시 앱(AccessibilityService)이 호출 — 어제 날짜와 그날 실제 적용됐던 limit 을 함께 전송.
 // computeDailyStats 는 현재 limits/{userId} 를 읽어 오므로, 과거 날짜 캐시가 오늘의 limit 으로
 // 덮어씌워지는 버그를 막기 위해 앱이 직접 snapshots 한 limit 을 body 로 보냄.
-app.post("/stats/:userId/daily/finalize", verifyToken, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { date, dailyLimit, hourlyLimit } = req.body;
+app.post(
+  "/stats/:userId/daily/finalize",
+  verifyToken,
+  verifySelf,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const { date, dailyLimit, hourlyLimit } = req.body;
 
-    if (!date || dailyLimit == null || hourlyLimit == null) {
-      return res
-        .status(400)
-        .json({ error: "date, dailyLimit, hourlyLimit 필드가 필요합니다" });
+      if (!date || dailyLimit == null || hourlyLimit == null) {
+        return res
+          .status(400)
+          .json({ error: "date, dailyLimit, hourlyLimit 필드가 필요합니다" });
+      }
+
+      // 오늘 이후 날짜는 finalize 불가 (오늘은 아직 진행 중)
+      const todayKST = toKSTDateString(Date.now());
+      if (date >= todayKST) {
+        return res.status(400).json({
+          error: `과거 날짜만 finalize 가능합니다 (date=${date}, today=${todayKST})`,
+        });
+      }
+
+      // 앱이 보내 준 어제 limit 으로 통계 계산
+      const limits = {
+        dailyLimit: Number(dailyLimit),
+        hourlyLimit: Number(hourlyLimit),
+      };
+      const stats = await computeDailyStats(userId, date, limits);
+
+      // Firestore 캐시에 덮어쓰기 (기존 캐시가 있어도 정확한 limit 으로 갱신)
+      await db
+        .collection("stats")
+        .doc(userId)
+        .collection("daily")
+        .doc(date)
+        .set({
+          ...stats,
+          finalizedAt: Date.now(), // finalize 시각 (디버깅용)
+        });
+
+      logger.info(
+        `daily finalize 완료 — userId=${userId}, date=${date}, daily=${dailyLimit}, hourly=${hourlyLimit}`,
+      );
+      res.json({ status: "ok", date, totalScroll: stats.totalScroll });
+    } catch (err) {
+      logger.error(`daily finalize 실패 — ${err.message}`);
+      res.status(500).json({ error: err.message });
     }
-
-    // 오늘 이후 날짜는 finalize 불가 (오늘은 아직 진행 중)
-    const todayKST = toKSTDateString(Date.now());
-    if (date >= todayKST) {
-      return res.status(400).json({
-        error: `과거 날짜만 finalize 가능합니다 (date=${date}, today=${todayKST})`,
-      });
-    }
-
-    // 앱이 보내 준 어제 limit 으로 통계 계산
-    const limits = {
-      dailyLimit: Number(dailyLimit),
-      hourlyLimit: Number(hourlyLimit),
-    };
-    const stats = await computeDailyStats(userId, date, limits);
-
-    // Firestore 캐시에 덮어쓰기 (기존 캐시가 있어도 정확한 limit 으로 갱신)
-    await db
-      .collection("stats")
-      .doc(userId)
-      .collection("daily")
-      .doc(date)
-      .set({
-        ...stats,
-        finalizedAt: Date.now(), // finalize 시각 (디버깅용)
-      });
-
-    logger.info(
-      `daily finalize 완료 — userId=${userId}, date=${date}, daily=${dailyLimit}, hourly=${hourlyLimit}`,
-    );
-    res.json({ status: "ok", date, totalScroll: stats.totalScroll });
-  } catch (err) {
-    logger.error(`daily finalize 실패 — ${err.message}`);
-    res.status(500).json({ error: err.message });
-  }
-});
+  },
+);
 
 // 주간 통계 — GET /stats/:userId/weekly?date=2026-05-03
 // stats 캐시 기반으로 전환 — userLogs 대량 스캔 없이 일별 캐시 합산
 // platform별 집계, dailyTotals(앱 히트맵용) 포함
-app.get("/stats/:userId/weekly", verifyToken, async (req, res) => {
+app.get("/stats/:userId/weekly", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query;
@@ -607,7 +612,7 @@ app.get("/stats/:userId/weekly", verifyToken, async (req, res) => {
 });
 
 // limit 설정 저장 — POST /limits/:userId
-app.post("/limits/:userId", verifyToken, async (req, res) => {
+app.post("/limits/:userId", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params; // 주소에서 변수 꺼내서 userId에 저장
     const { hourlyLimit, dailyLimit } = req.body;
@@ -640,7 +645,7 @@ app.post("/limits/:userId", verifyToken, async (req, res) => {
 
 // 월간 통계 — GET /stats/:userId/monthly?date=2026-05
 // stats 캐시 기반으로 전환 — platform별 집계, stop/ignore 합산, 목표달성일 수 포함
-app.get("/stats/:userId/monthly", verifyToken, async (req, res) => {
+app.get("/stats/:userId/monthly", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
     const { date } = req.query; // "2026-05"
@@ -744,7 +749,7 @@ app.get("/stats/:userId/monthly", verifyToken, async (req, res) => {
 });
 
 // limit 조회 — GET /limits/:userId
-app.get("/limits/:userId", verifyToken, async (req, res) => {
+app.get("/limits/:userId", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
 
