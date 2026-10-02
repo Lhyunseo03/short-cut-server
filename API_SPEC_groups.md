@@ -166,8 +166,101 @@ users/{uid}
 
 ---
 
-## 5. 다음 단계 예고 (앱에서 미리 알아둘 것)
+## 5. 2단계 — 초대 · 가입 · 탈퇴 (10/2 추가)
 
-**2단계 (10/6~12)** — `POST /invites`(24시간짜리 6자 코드), `GET /invites/{code}`(가입 전 미리보기), `POST /groups/join`, `DELETE /groups/{gid}/members/me`, 초대 랜딩 페이지 `GET /invite/{code}`(HTML)
+### Firestore
 
-**3단계 (10/13~)** — `GET /groups/{gid}/status`. `members` 의 `todayCount`·`lastHourCount` 캐시를 읽기만 한다. 30초 폴링이라 매번 집계하지 않는다.
+```
+invites/{code}
+  code       6자 대문자+숫자 (O·0·I·1 제외). 문서 ID 와 같음
+  groupId    어느 그룹 초대인가
+  createdBy  만든 사람 uid
+  createdAt  ms
+  expiresAt  ms (생성 +24시간)
+```
+
+코드가 문서 ID 라 같은 코드가 두 번 생기는 걸 Firestore 가 막는다(`create()` 는 이미 있으면 실패 → 다시 뽑음).
+
+### `POST /invites` — 초대 코드 만들기
+
+**요청** `{ "groupId": "..." }`
+**201** `{ "code": "A3F9K2", "groupId": "...", "expiresAt": 1759000000000 }`
+
+멤버 누구나 만들 수 있다(관리자 없음). 부를 때마다 **새 코드**를 준다 — 한 그룹에 코드가 여럿 살아 있어도 된다.
+
+| 상태 | 언제 |
+|---|---|
+| 400 | `groupId` 없음 |
+| 403 | 그 그룹 멤버가 아님 |
+| 404 | 없는 그룹 |
+
+### `GET /invites/{code}` — 가입 전 미리보기 (앱용)
+
+```json
+{
+  "code": "A3F9K2",
+  "expiresAt": 1759000000000,
+  "alreadyMember": false,
+  "group": {
+    "groupId": "...", "name": "...", "description": "...",
+    "goal": { "dailyLimit": 200, "hourlyLimit": 60 }, "approvalRate": 60,
+    "memberCount": 3, "maxMembers": 10, "isFull": false
+  }
+}
+```
+
+**멤버 목록·카운트는 주지 않는다** — 아직 멤버가 아닌 사람이 부르는 경로라서.
+`alreadyMember: true` 면 "가입하기" 대신 "열기" 를 보여주면 된다.
+코드는 소문자·공백·하이픈이 섞여 와도 받아준다 (`a3f-9k2` → `A3F9K2`).
+
+| 상태 | 언제 |
+|---|---|
+| 400 | 형식이 6자가 아님 |
+| 404 | 없는 코드, 또는 그룹이 사라짐 |
+| **410** | 만료된 코드 — "없음" 과 구분해서 "링크가 늦었구나" 를 알 수 있게 |
+
+### `POST /groups/join` — 코드로 가입
+
+**요청** `{ "code": "A3F9K2", "nickname": "현서" }` (`nickname` 선택 — `users/{uid}.nickname` 에 저장)
+
+| 상태 | 응답 |
+|---|---|
+| **201** | `{ "status": "ok", "groupId": "...", "memberCount": 4 }` |
+| 200 | `{ "status": "ok", "groupId": "...", "alreadyMember": true }` — 이미 멤버. 인원 안 늘어남 |
+| 400 / 404 / 410 | 미리보기와 같음 |
+| **409** | 정원 찼음 |
+
+**트랜잭션으로 처리한다.** 마지막 한 자리에 두 사람이 동시에 들어오면 둘 다 "9/10 이니까 된다" 를 읽고 둘 다 추가해 11명이 될 수 있다. "정원 확인 → 멤버 추가 → memberCount 증가" 를 한 덩어리로 묶었다.
+개발 중 3명이 동시에 마지막 1자리에 요청하는 상황을 재현해서, 정확히 1명만 들어가고 2명은 409 를 받는 것을 확인했다.
+
+### `DELETE /groups/{gid}/members/me` — 탈퇴
+
+**200** `{ "status": "ok", "groupId": "...", "memberCount": 2, "groupDeleted": false }`
+
+자기 자신만 뺄 수 있다. **남을 내보내는 기능은 없다**(관리자 없음 — G9).
+**마지막 한 명이 나가면 그룹을 지운다** (`groupDeleted: true`). 초대를 만들려면 멤버여야 하므로, 빈 그룹은 아무도 다시 들어갈 수 없는 껍데기가 되기 때문.
+트랜잭션이라 인원수가 어긋나지 않는다. `users/{uid}.groupIds` 에서도 빠진다.
+
+| 상태 | 언제 |
+|---|---|
+| 404 | 그 그룹 멤버가 아님 |
+
+### `GET /invite/{code}` — 초대 랜딩 페이지 (HTML, **토큰 없음**)
+
+카톡 등으로 받은 링크를 브라우저로 여는 경로. 받은 사람은 아직 로그인 전일 수 있어서 **이 경로만 `verifyToken` 을 지나지 않는다.**
+
+```
+https://short-cut-server-production.up.railway.app/invite/A3F9K2
+```
+
+보여주는 것은 그룹 이름·설명·인원수·코드뿐이다. **멤버 이름·uid·스크롤 수는 절대 넣지 않는다.**
+그룹 이름과 설명은 HTML 이스케이프한다 — 그룹 이름에 `<script>` 를 넣어도 실행되지 않는다.
+정원이 찼으면 코드를 숨기고 "정원이 가득 찼어요" 를 보여준다. 없는·만료된 코드도 HTML 로 응답한다(404 / 410).
+
+앱에서 공유할 때는 이 URL 을 그대로 보내면 된다.
+
+---
+
+## 6. 다음 단계 예고
+
+**3단계 (10/13~)** — `GET /groups/{gid}/status`. `members` 의 `todayCount`·`lastHourCount`·`lastScrollAt` 캐시를 읽기만 한다. 30초 폴링이라 매번 집계하지 않는다.

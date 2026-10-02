@@ -82,6 +82,7 @@ app.use(require("./routes/devices").router);
 app.use(require("./routes/sync").router);
 app.use(require("./routes/intervention").router);
 app.use(require("./routes/groups").router);
+app.use(require("./routes/invites").router);
 
 // ══════════════════════════════════════════════════════════════
 // Stats 캐시 헬퍼
