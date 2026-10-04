@@ -386,6 +386,8 @@ function landingPage({ title, body, code }) {
   .code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:28px; letter-spacing:4px;
           margin:20px 0; padding:12px; background:rgba(127,127,127,.12); border-radius:10px; }
   .muted { font-size:13px; opacity:.6; margin-top:20px; }
+  .btn { display:block; margin:16px 0 4px; padding:14px; border-radius:12px; background:#0a84ff;
+         color:#fff; text-decoration:none; font-size:16px; font-weight:600; }
 </style>
 </head>
 <body>
@@ -395,7 +397,8 @@ function landingPage({ title, body, code }) {
     ${
       code
         ? `<div class="code">${escapeHtml(code)}</div>
-    <p>Short-Cut 앱 &gt; 그룹 &gt; 코드로 참여 에서 이 코드를 입력하세요.</p>`
+    <a class="btn" href="intent://join?code=${encodeURIComponent(code)}#Intent;scheme=shortcut;package=com.example.short_cut;end">앱에서 열기</a>
+    <p>앱이 열리지 않으면 Short-Cut 앱 &gt; 그룹 &gt; 코드로 참여 에서 이 코드를 입력하세요.</p>`
         : ""
     }
     <p class="muted">Short-Cut — 숏폼 사용을 함께 줄이는 앱</p>
@@ -439,15 +442,13 @@ router.get("/invite/:code", async (req, res) => {
     );
   } catch (err) {
     logger.error(`초대 랜딩 실패 — ${err.message}`);
-    res
-      .status(500)
-      .send(
-        landingPage({
-          title: "잠시 후 다시 시도해 주세요",
-          body: "",
-          code: null,
-        }),
-      );
+    res.status(500).send(
+      landingPage({
+        title: "잠시 후 다시 시도해 주세요",
+        body: "",
+        code: null,
+      }),
+    );
   }
 });
 
