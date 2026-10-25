@@ -77,11 +77,15 @@ async function deviceSummary(userId) {
   let lastSeenAt = null;
   let permissionsOk = null;
   for (const d of devices) {
-    if (d.lastSeenAt !== null && (lastSeenAt === null || d.lastSeenAt > lastSeenAt))
+    if (
+      d.lastSeenAt !== null &&
+      (lastSeenAt === null || d.lastSeenAt > lastSeenAt)
+    )
       lastSeenAt = d.lastSeenAt;
     if (d.loggedOutAt) continue; // 로그아웃한 기기의 권한 상태는 보지 않는다
     if (d.permissionsOk === false) permissionsOk = false;
-    else if (d.permissionsOk === true && permissionsOk === null) permissionsOk = true;
+    else if (d.permissionsOk === true && permissionsOk === null)
+      permissionsOk = true;
   }
   const loggedOut = devices.length > 0 && devices.every((d) => d.loggedOutAt);
   const loggedOutAt = loggedOut
@@ -100,9 +104,21 @@ function maxOrNull(a, b) {
 //   members: [{ userId, displayName, joinedAt }]  (이름은 호출하는 쪽에서 합쳐 넘긴다)
 const cache = new Map(); // gid → { at, key, rows }
 async function memberRows(gid, members, now = Date.now()) {
-  const key = members.map((m) => m.userId).sort().join(",");
+  const key = members
+    .map((m) => m.userId)
+    .sort()
+    .join(",");
   const hit = cache.get(gid);
-  if (hit && hit.key === key && now - hit.at < CACHE_TTL_MS) return hit.rows;
+  if (hit && hit.key === key && now - hit.at < CACHE_TTL_MS) {
+    // 캐시는 숫자만 재사용한다. 이름은 매번 지금 값으로 — 닉네임을 바꾸면 15초 기다리지 않고 바로 보이게
+    const byId = new Map(members.map((m) => [m.userId, m]));
+    return hit.rows.map((r) => ({
+      ...r,
+      displayName: byId.get(r.userId).displayName,
+      nickname: byId.get(r.userId).displayName,
+      joinedAt: byId.get(r.userId).joinedAt ?? null,
+    }));
+  }
 
   const ids = members.map((m) => m.userId);
   const userDocs = ids.length
@@ -156,12 +172,23 @@ async function todayPopupCount(userId, now) {
 // 그룹 한도가 그날 얼마였나 (9주차 — 투표로 한도가 바뀐 뒤에도 지난 날짜는 그때 한도로 칠하게)
 //   goalHistory: [{ from, dailyLimit, hourlyLimit, prevDailyLimit, prevHourlyLimit }] (적용 순)
 function goalOnDate(group, date) {
-  const hist = (group.goalHistory || []).slice().sort((a, b) => a.from - b.from);
+  const hist = (group.goalHistory || [])
+    .slice()
+    .sort((a, b) => a.from - b.from);
   const current = group.goal || {};
-  if (hist.length === 0) return { dailyLimit: current.dailyLimit ?? null, hourlyLimit: current.hourlyLimit ?? null };
+  if (hist.length === 0)
+    return {
+      dailyLimit: current.dailyLimit ?? null,
+      hourlyLimit: current.hourlyLimit ?? null,
+    };
   const dayStart = startOfKSTDay(date);
-  let g = { dailyLimit: hist[0].prevDailyLimit, hourlyLimit: hist[0].prevHourlyLimit };
-  for (const h of hist) if (h.from <= dayStart) g = { dailyLimit: h.dailyLimit, hourlyLimit: h.hourlyLimit };
+  let g = {
+    dailyLimit: hist[0].prevDailyLimit,
+    hourlyLimit: hist[0].prevHourlyLimit,
+  };
+  for (const h of hist)
+    if (h.from <= dayStart)
+      g = { dailyLimit: h.dailyLimit, hourlyLimit: h.hourlyLimit };
   return g;
 }
 
@@ -193,7 +220,8 @@ async function lastNDaysCounts(userId, n, now) {
 async function monthlyDailyCounts(userId, month, now) {
   const start = startOfKSTDay(`${month}-01`);
   const [y, m] = month.split("-").map(Number);
-  const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+  const next =
+    m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
   const end = Math.min(startOfKSTDay(`${next}-01`), now + 1);
   const days = [];
   if (start > now) return days;
