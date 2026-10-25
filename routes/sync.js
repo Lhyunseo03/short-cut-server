@@ -14,6 +14,9 @@ const { sendDataToOtherDevices } = require("../utils/fcm");
 const { toKSTDateString, startOfKSTDay } = require("../utils/time");
 // 시간당 마일스톤 유효 기간 — intervention.js 와 같은 값을 써야 하므로 가져다 쓴다
 const { HOURLY_TTL_MS } = require("./intervention");
+// [6주차] 닉네임 · 한도(예약 포함)도 /sync 로 같이 내려준다
+const { normalizeNickname } = require("../utils/nickname");
+const { readLimits } = require("../utils/limits");
 const {
   isValidDeviceId,
   countActiveDevices,
@@ -112,6 +115,9 @@ async function readInterventionState(userId, dateKST) {
   if (blockUntil !== null && blockUntil <= now) blockUntil = null;
 
   return {
+    // [6주차] 계정 단위 설정 — 다른 기기에서 바꾼 값이 이 기기에도 따라오게
+    nickname: normalizeNickname(d.nickname),
+    appMode: d.appMode === "normal" || d.appMode === "hard" ? d.appMode : null,
     blockUntil,
     // shown — 아직 팝업을 안 띄운 기기가 같은 단계를 새로 띄우지 않게 (억제)
     lastShownMilestone: {
@@ -161,10 +167,11 @@ router.get("/sync", verifyToken, async (req, res) => {
     const now = Date.now();
 
     // 세 조회는 서로 무관하므로 동시에 실행. 순서대로 await 하면 응답이 3배 느려진다.
-    const [counts, state, deviceCount] = await Promise.all([
+    const [counts, state, deviceCount, limits] = await Promise.all([
       computeCounts(userId, deviceId, now),
       readInterventionState(userId, toKSTDateString(now)),
       countActiveDevices(userId),
+      readLimits(userId, now), // 예약 시각이 지났으면 여기서 승격된다
     ]);
 
     // 이 기기가 "방금 sync 했다" 고 기록 → COUNT_UPDATED 수신 자격(최근 2분)의 근거.
@@ -190,6 +197,18 @@ router.get("/sync", verifyToken, async (req, res) => {
       // 각 값이 찍힌 시각 (2026-09-30 추가). 만료됐거나 기록이 없으면 null.
       lastShownMilestoneAt: state.lastShownMilestoneAt,
       lastAnsweredMilestoneAt: state.lastAnsweredMilestoneAt,
+      // [6주차] 아래 셋은 저장된 적이 없으면 null — 앱은 null 이면 로컬 값을 그대로 둔다
+      nickname: state.nickname, // 계정 닉네임
+      appMode: state.appMode, // "normal" | "hard" | null
+      limits: limits
+        ? {
+            hourlyLimit: limits.hourlyLimit,
+            dailyLimit: limits.dailyLimit,
+            pendingHourlyLimit: limits.pendingHourlyLimit,
+            pendingDailyLimit: limits.pendingDailyLimit,
+            pendingEffectiveAt: limits.pendingEffectiveAt,
+          }
+        : null,
     });
 
     logger.info(

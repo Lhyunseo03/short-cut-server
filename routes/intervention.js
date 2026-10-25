@@ -27,6 +27,24 @@ const { verifyToken } = require("../middleware/auth");
 const { sendDataToOtherDevices } = require("../utils/fcm");
 const { toKSTDateString } = require("../utils/time");
 const { isValidDeviceId } = require("./devices");
+// [7주차] 로그아웃을 그룹에 알린다 (G11)
+const { pushToGroup } = require("../utils/groupPush");
+const { resolveDisplayName } = require("../utils/nickname");
+
+// [7주차] 권한 상태가 바뀐 순간을 기록 — 그룹 화면의 "권한 꺼짐(… 이후)" (G11)
+//   켜짐 → 꺼짐 : permissionsOffSince = 지금
+//   꺼짐 유지    : 그대로 (처음 꺼진 시각 유지)
+//   꺼짐 → 켜짐 : null
+function permissionFields(prev, permissionsOk, now) {
+  if (permissionsOk === undefined) return {};
+  if (permissionsOk === true)
+    return { permissionsOk: true, permissionsOffSince: null };
+  const since =
+    prev && prev.permissionsOk === false && prev.permissionsOffSince
+      ? prev.permissionsOffSince
+      : now;
+  return { permissionsOk: false, permissionsOffSince: since };
+}
 
 const router = express.Router();
 
@@ -240,9 +258,6 @@ router.post("/heartbeat", verifyToken, async (req, res) => {
     }
 
     const now = Date.now();
-    const data = { lastSeenAt: now };
-    if (permissionsOk !== undefined) data.permissionsOk = permissionsOk;
-
     const ref = userRef(req.userId).collection("devices").doc(deviceId);
     const doc = await ref.get();
     if (!doc.exists) {
@@ -252,6 +267,10 @@ router.post("/heartbeat", verifyToken, async (req, res) => {
       return res.status(404).json({ error: "등록되지 않은 기기입니다" });
     }
 
+    const data = {
+      lastSeenAt: now,
+      ...permissionFields(doc.data(), permissionsOk, now),
+    };
     await ref.update(data);
     res.json({ status: "ok", serverTime: now });
   } catch (err) {
@@ -288,12 +307,77 @@ router.post("/logout", verifyToken, async (req, res) => {
 
     logger.info(`로그아웃 — userId: ${req.userId}, deviceId: ${deviceId}`);
     res.json({ status: "ok", loggedOutAt: now });
+
+    // [7주차] 내가 속한 그룹들에 "로그아웃" 알림 (G11). 응답 뒤라 실패해도 앱에 영향 없음
+    notifyLogout(req.userId, doc.data().deviceName || "기기").catch((e) =>
+      logger.warn(`로그아웃 그룹 알림 실패 — ${e.message}`),
+    );
   } catch (err) {
     logger.error(`logout 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
 
+async function notifyLogout(userId, deviceName) {
+  const u = await userRef(userId).get();
+  const gids = (u.exists ? u.data().groupIds : null) || [];
+  if (gids.length === 0) return;
+  const name = await resolveDisplayName(userId);
+  const groups = await db.getAll(
+    ...gids.map((g) => db.collection("groups").doc(g)),
+  );
+  for (const g of groups) {
+    if (!g.exists) continue;
+    const groupName = g.data().name || "그룹";
+    pushToGroup(g.id, userId, {
+      type: "MEMBER_LOGOUT",
+      groupName,
+      title: groupName,
+      body: `${name} 님이 ${deviceName}에서 로그아웃했어요`,
+      extra: { userId },
+    });
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+// POST /mode  { deviceId, mode: "normal" | "hard" }   — 6주차 (정은 10/4 요청)
+// ═════════════════════════════════════════════════════════════
+// 일반/하드 모드는 기기가 아니라 계정 설정이다. 한 기기에서 바꾸면 다른 기기도 따라가야
+// "하드 모드는 폰에만 걸고 태블릿에서 본다" 는 우회가 안 된다.
+// 저장: users/{uid}.appMode · appModeAt. 다른 기기는 GET /sync 응답의 appMode 로 받는다.
+router.post("/mode", verifyToken, async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { deviceId, mode } = req.body;
+
+    if (!isValidDeviceId(deviceId)) {
+      return res.status(400).json({ error: "deviceId 형식이 잘못되었습니다" });
+    }
+    if (mode !== "normal" && mode !== "hard") {
+      return res
+        .status(400)
+        .json({ error: 'mode 는 "normal" 또는 "hard" 여야 합니다' });
+    }
+
+    const now = Date.now();
+    await userRef(userId).set(
+      { appMode: mode, appModeAt: now },
+      { merge: true },
+    );
+
+    logger.success(
+      `mode 저장 — userId: ${userId}, device: ${deviceId}, ${mode}`,
+    );
+    res.json({ status: "ok", appMode: mode, appModeAt: now });
+
+    // 지금 쇼츠를 보고 있는 다른 기기가 바로 /sync 해서 새 모드를 받게 깨운다
+    sendDataToOtherDevices(userId, deviceId, "COUNT_UPDATED");
+  } catch (err) {
+    logger.error(`mode 저장 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // HOURLY_TTL_MS 는 sync.js 도 쓴다 (읽을 때 만료된 시간당 단계를 -1 로 내리기 위해).
 // 두 곳에 같은 숫자를 적으면 한쪽만 고쳐서 어긋나므로 여기서 내보낸다.
-module.exports = { router, HOURLY_TTL_MS };
+module.exports = { router, HOURLY_TTL_MS, permissionFields };

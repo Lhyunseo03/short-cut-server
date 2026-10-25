@@ -25,7 +25,7 @@ const logger = require("../utils/logger");
 const { verifyToken } = require("../middleware/auth");
 // 표시 이름은 users/{uid}.nickname 한 곳에 저장한다 (2026-09-28 정은 요청).
 // 앱이 로그인 직후 register 를 부르면서 같이 보내므로 여기서 받아 둔다.
-const { saveNickname } = require("../utils/nickname");
+const { saveNickname, normalizeNickname } = require("../utils/nickname");
 
 const router = express.Router();
 
@@ -116,7 +116,17 @@ router.post("/devices/register", verifyToken, async (req, res) => {
     // Firestore 는 undefined 를 저장하려 하면 에러를 던진다.
     if (deviceName !== undefined) data.deviceName = deviceName;
     if (fcmToken !== undefined) data.fcmToken = fcmToken;
-    if (permissionsOk !== undefined) data.permissionsOk = permissionsOk;
+    if (permissionsOk !== undefined) {
+      data.permissionsOk = permissionsOk;
+      // [7주차] 권한이 꺼진 시각 (G11 "권한 꺼짐(… 이후)") — heartbeat 와 같은 규칙.
+      // 이미 꺼져 있던 기기면 처음 꺼진 시각을 유지, 켜지면 null.
+      const p = prev.exists ? prev.data() : {};
+      data.permissionsOffSince = permissionsOk
+        ? null
+        : p.permissionsOk === false && p.permissionsOffSince
+          ? p.permissionsOffSince
+          : now;
+    }
 
     // merge: true — 보낸 필드만 갱신하고 나머지는 그대로 둔다.
     // 이게 없으면 fcmToken 만 보내는 onNewToken 호출 때 deviceName 이 날아간다.
@@ -124,14 +134,28 @@ router.post("/devices/register", verifyToken, async (req, res) => {
 
     // 닉네임은 기기가 아니라 사용자 것이므로 users/{uid} 에 저장한다.
     // 안 보냈거나 형식이 이상하면 아무것도 쓰지 않는다 (기존 값 보존).
-    await saveNickname(userId, nickname);
+    const saved = await saveNickname(userId, nickname);
+
+    // [6주차] 응답에 계정의 현재 닉네임을 실어 보낸다 (정은 10/4 요청).
+    // 다른 기기에서 바꾼 닉네임이 이 기기 설정 화면에도 보이게. 저장된 게 없으면 null.
+    let currentNickname = saved;
+    if (!currentNickname) {
+      const u = await db.collection("users").doc(userId).get();
+      currentNickname = u.exists ? normalizeNickname(u.data().nickname) : null;
+    }
 
     const deviceCount = await countActiveDevices(userId);
     logger.success(
       `기기 등록 — userId: ${userId}, deviceId: ${deviceId}, ${prev.exists ? "갱신" : "신규"}, 활성 기기 ${deviceCount}대`,
     );
 
-    res.json({ status: "ok", deviceId, deviceCount, serverTime: now });
+    res.json({
+      status: "ok",
+      deviceId,
+      deviceCount,
+      nickname: currentNickname,
+      serverTime: now,
+    });
   } catch (err) {
     logger.error(`기기 등록 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });

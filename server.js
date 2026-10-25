@@ -69,6 +69,8 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 const { db } = require("./utils/firebase");
 // Firebase Auth 토큰 검증 미들웨어 import
 const { verifyToken, verifySelf } = require("./middleware/auth");
+// [6주차] 한도 예약 — 읽을 때 승격 (utils/limits.js)
+const { limitsRef, readLimits, parsePending } = require("./utils/limits");
 
 // ── 2학기 다중 기기 동기화 (D1~D6) ─────────────────────────
 // 라우트를 파일로 분리했다. server.js 가 이미 800줄이라 여기에 더 붙이면
@@ -83,6 +85,12 @@ app.use(require("./routes/sync").router);
 app.use(require("./routes/intervention").router);
 app.use(require("./routes/groups").router);
 app.use(require("./routes/invites").router);
+// [7주차] 그룹 한도 초과 알림 · 넛지 (G7 · G8)
+app.use(require("./routes/groupAlerts").router);
+// [8~9주차] 한도 변경 제안 · 투표 · 월요일 적용 (G9). sweeper 가 1분마다 마감 · 적용을 확인한다
+const proposals = require("./routes/proposals");
+app.use(proposals.router);
+proposals.startSweeper();
 
 // ══════════════════════════════════════════════════════════════
 // Stats 캐시 헬퍼
@@ -228,6 +236,26 @@ async function getDailyStats(userId, date, limits, isToday = false) {
   return data;
 }
 
+// [6주차] users/{uid}.lastScrollAt · devices/{deviceId}.lastScrollAt 를 더 최근 값일 때만 올린다.
+// 배치가 늦게 도착해도(재전송 큐) 시각이 뒤로 가지 않게 비교 후 쓴다.
+async function bumpLastScroll(userId, deviceId, ts) {
+  const t = Number(ts);
+  if (!Number.isFinite(t)) return;
+  const uRef = db.collection("users").doc(userId);
+  const u = await uRef.get();
+  if (!(u.exists && u.data().lastScrollAt >= t)) {
+    await uRef.set({ lastScrollAt: t }, { merge: true });
+  }
+  if (deviceId && deviceId !== "legacy") {
+    const dRef = uRef.collection("devices").doc(deviceId);
+    const d = await dRef.get();
+    // 등록 안 된 기기면 문서를 새로 만들지 않는다 (유령 기기 방지)
+    if (d.exists && !(d.data().lastScrollAt >= t)) {
+      await dRef.update({ lastScrollAt: t });
+    }
+  }
+}
+
 // ── 스크롤 배치 저장 — POST /userlogs ─────────────────────
 // Android에서 10개 누적 or 5분마다 배치 전송
 app.post("/userlogs", verifyToken, async (req, res) => {
@@ -237,6 +265,15 @@ app.post("/userlogs", verifyToken, async (req, res) => {
     // 필수 필드 검증 — logId 추가됨 (중복 방지용 UUID)
     if (!userId || !logId || !timestamp || scrollCount === undefined) {
       return res.status(400).json({ error: "필수 필드 누락" });
+    }
+
+    // [6주차 보안] body 의 userId 가 토큰 주인과 다르면 거절한다.
+    // 예전엔 body 의 userId 를 그대로 저장해서, 로그인한 사람이 남의 uid 로
+    // 스크롤 기록을 써 넣을 수 있었다 (10/5 발견). 앱은 항상 자기 uid 를 보낸다.
+    if (userId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "다른 사용자의 기록은 저장할 수 없습니다" });
     }
 
     if (typeof scrollCount !== "number" || scrollCount <= 0) {
@@ -305,6 +342,12 @@ app.post("/userlogs", verifyToken, async (req, res) => {
     //
     // 응답은 이미 보냈으므로 발송이 실패해도 앱에는 영향이 없다.
     sendDataToOtherDevices(req.userId, devId, "COUNT_UPDATED");
+
+    // [6주차] 마지막 스크롤 시각 — 그룹 화면의 "마지막 스크롤" (G11).
+    // 응답 뒤에 하므로 실패해도 앱에는 영향 없다.
+    bumpLastScroll(req.userId, devId, timestamp).catch((e) =>
+      logger.warn(`lastScrollAt 갱신 실패 — ${e.message}`),
+    );
   } catch (err) {
     logger.error(`userLog 저장 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -374,6 +417,13 @@ app.post("/violations", verifyToken, async (req, res) => {
     // 필수 필드 검증 — violationId 추가 (재전송 중복 방지용 고유 ID)
     if (!userId || !violationId || !timestamp || !limitType || !action) {
       return res.status(400).json({ error: "필수 필드 누락" });
+    }
+
+    // [6주차 보안] /userlogs 와 같은 이유 — 남의 uid 로 팝업 응답을 저장하지 못하게
+    if (userId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "다른 사용자의 기록은 저장할 수 없습니다" });
     }
 
     if (!["hourly", "daily"].includes(limitType)) {
@@ -613,10 +663,16 @@ app.get("/stats/:userId/weekly", verifyToken, verifySelf, async (req, res) => {
 });
 
 // limit 설정 저장 — POST /limits/:userId
+// body: { hourlyLimit, dailyLimit, pendingHourlyLimit?, pendingDailyLimit?, pendingEffectiveAt?, deviceId? }
+//
+// [6주차 한도 예약 동기화] 예약 필드 3개 추가 (10/4 정은과 합의)
+//   필드 없음 = 그대로 / null = 예약 해제 / 숫자 = 저장
+//   예전엔 set() 으로 문서를 통째로 덮어써서, 현재 한도만 보내는 요청이 오면
+//   다른 기기가 걸어 둔 예약이 지워졌다 → merge 로 보낸 필드만 바꾼다.
 app.post("/limits/:userId", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params; // 주소에서 변수 꺼내서 userId에 저장
-    const { hourlyLimit, dailyLimit } = req.body;
+    const { hourlyLimit, dailyLimit, deviceId } = req.body;
 
     if (hourlyLimit === undefined || dailyLimit === undefined) {
       return res.status(400).json({ error: "필수 필드 누락" });
@@ -628,16 +684,37 @@ app.post("/limits/:userId", verifyToken, verifySelf, async (req, res) => {
         .json({ error: "hourlyLimit, dailyLimit은 숫자여야 합니다" });
     }
 
-    // firebase 에 저장
-    await db.collection("limits").doc(userId).set({
-      userId,
-      hourlyLimit,
-      dailyLimit,
-      updatedAt: Date.now(),
-    });
+    const pending = parsePending(req.body);
+    if (pending.error) return res.status(400).json({ error: pending.error });
 
-    logger.success(`limit 저장 완료 — userId: ${userId}`);
-    res.json({ status: "ok" });
+    const now = Date.now();
+    // firebase 에 저장 — 보낸 필드만 (merge)
+    await limitsRef(userId).set(
+      {
+        userId,
+        hourlyLimit,
+        dailyLimit,
+        ...pending.fields,
+        updatedAt: now,
+      },
+      { merge: true },
+    );
+
+    const saved = await readLimits(userId, now); // 저장 직후 상태 (예약 시각이 이미 지났으면 승격까지)
+    logger.success(
+      `limit 저장 완료 — userId: ${userId}, h${saved.hourlyLimit}/d${saved.dailyLimit}` +
+        (saved.pendingEffectiveAt
+          ? `, 예약 h${saved.pendingHourlyLimit ?? "-"}/d${saved.pendingDailyLimit ?? "-"} @${saved.pendingEffectiveAt}`
+          : ""),
+    );
+    res.json({ status: "ok", limits: saved });
+
+    // 다른 기기가 다음 /sync 에서 새 한도 · 예약을 받도록 깨운다 (지금 쇼츠 보는 기기만 받음)
+    sendDataToOtherDevices(
+      userId,
+      typeof deviceId === "string" ? deviceId : null,
+      "COUNT_UPDATED",
+    );
   } catch (err) {
     logger.error(`limit 저장 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -750,17 +827,18 @@ app.get("/stats/:userId/monthly", verifyToken, verifySelf, async (req, res) => {
 });
 
 // limit 조회 — GET /limits/:userId
+// [6주차] 예약 필드 3개도 같이 준다. 예약 시각이 지났으면 서버가 승격해서 저장하고 준다.
 app.get("/limits/:userId", verifyToken, verifySelf, async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const doc = await db.collection("limits").doc(userId).get();
+    const limits = await readLimits(userId);
 
-    if (!doc.exists) {
+    if (!limits) {
       return res.status(404).json({ error: "no limit set" });
     }
 
-    res.json({ userId, ...doc.data() }); // userId랑 doc에 있는 data 합쳐서 넣음
+    res.json(limits);
   } catch (err) {
     logger.error(`limit 조회 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
