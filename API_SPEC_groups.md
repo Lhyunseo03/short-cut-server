@@ -261,6 +261,122 @@ https://short-cut-server-production.up.railway.app/invite/A3F9K2
 
 ---
 
-## 6. 다음 단계 예고
+## 6. 3단계 — 그룹 페이지 · 구성원 상세 · 구성원 일간 통계 (6주차, 10/18)
 
-**3단계 (10/13~)** — `GET /groups/{gid}/status`. `members` 의 `todayCount`·`lastHourCount`·`lastScrollAt` 캐시를 읽기만 한다. 30초 폴링이라 매번 집계하지 않는다.
+숫자만 준다. 순위 · 빨강/초록 · 종 표시 · "3분 전" 은 앱이 계산한다 (9/25 합의 그대로).
+**숫자는 캐시가 아니라 읽을 때 userLogs 로 센다** — `lastHourCount` 는 업로드가 없어도 시간이 지나면 줄어야 해서.
+같은 그룹을 15초 안에 다시 부르면 서버 메모리 캐시를 준다 (여러 명이 30초마다 열어도 읽기가 몰리지 않게).
+
+### 멤버 행 (아래 세 API 공통)
+
+| 필드 | 뜻 |
+|---|---|
+| `userId` · `nickname` · `displayName` | `nickname` 과 `displayName` 은 같은 값 (앱이 어느 쪽을 읽든 되게) |
+| `todayCount` | 오늘(KST) 모든 기기 합계 |
+| `lastHourCount` | 지금부터 1시간 전까지 모든 기기 합계 — **종(독촉) 판단용** (시간당 그룹 한도와 비교) |
+| `lastScrollAt` | 마지막 스크롤 업로드 시각(ms). 없으면 null |
+| `lastSeenAt` | 기기들 중 가장 최근 신호(heartbeat · sync · 등록) 시각(ms) |
+| `permissionsOk` | 로그인 중인 기기 중 하나라도 권한 꺼짐이면 false, 전부 켜짐이면 true, 모르면 null |
+| `loggedOut` · `loggedOutAt` | 기기가 전부 로그아웃이면 true + 마지막 로그아웃 시각 |
+| `isMe` | 요청한 사람이면 true |
+
+### `GET /groups/{gid}/status` — 그룹 페이지 30초 새로고침
+
+```json
+{ "groupId": "...", "goal": { "dailyLimit": 200, "hourlyLimit": 50 }, "date": "2026-10-18",
+  "members": [ 멤버 행, ... ], "serverTime": 1792303099597 }
+```
+가입순. 멤버 아님 403 · 없는 그룹 404.
+`GET /groups/{gid}` 의 `members` 도 **같은 실제 숫자**로 바뀌었다 (예전엔 0 이었음).
+
+### `GET /groups/{gid}/members/{uid}` — 구성원 상세 (G5 · G11)
+
+```json
+{ "groupId": "...", "goal": {...}, "date": "2026-10-18", "serverTime": ...,
+  "member": { 멤버 행 + "todayPopupCount": 3, "joinedAt": ...,
+              "devices": [ { "deviceId": "...", "deviceName": "SM-X710", "lastSeenAt": ..., "lastScrollAt": ...,
+                             "loggedOutAt": null, "permissionsOk": true }, ... ] } }
+```
+- `todayPopupCount` = 오늘 팝업에 답한 횟수 (violations)
+- `devices` = 기기당 한 줄, 등록순. fcmToken 은 절대 안 나간다
+- 보는 사람이 멤버가 아니면 403, 보이는 사람이 멤버가 아니면 404
+
+### `GET /groups/{gid}/members/{uid}/daily?month=YYYY-MM` — 구성원 일간 통계 (G6)
+
+```json
+{ "groupId": "...", "userId": "...", "month": "2026-10", "goal": { "dailyLimit": 200, "hourlyLimit": 50 },
+  "days": [ { "date": "2026-10-01", "count": 37 }, ..., { "date": "2026-10-18", "count": 12 } ] }
+```
+- `month` 생략 → 이번 달. 형식 틀리면 400. 미래 날짜는 안 준다
+- 앱: `count > goal.dailyLimit` → 빨강, 아니면 초록
+- `goal` 은 **지금** 그룹 한도 (투표로 한도가 바뀐 뒤 지난 날짜도 지금 한도로 비교됨 — 9주차에 이력 추가 예정)
+
+---
+
+## 6-1. 6주차에 같이 바뀐 것 (10/23, 정은 GroupApi.kt 계약에 맞춤)
+
+- `GET /groups` → `{ count, maxGroups: 5, groups: [ GroupSummary + myTodayCount ] }` — `myTodayCount` = 내 오늘 합계(모든 기기)
+- GroupSummary 에 `pendingGoal`(통과 후 월요일 대기 한도, 없으면 null) · `lockedUntil` 추가
+- 멤버 행 `lastSeenAt` = 그 사람 **기기들의 최신 신호**(heartbeat · sync · 등록). 예전 "가입 시각" 버그 해결
+- 구성원 상세 `member` 에 `todayPopups`(= todayPopupCount) · `last7Days: [{ date, count, dailyLimit }]` · 기기마다 `permissionsOffSince`
+- 구성원 일간 통계 `days[]` 에 그날 그룹 일간 한도 `dailyLimit` (투표로 바뀌기 전 날짜는 옛 한도)
+- **그룹 5개 제한**(G1): `POST /groups` · `POST /groups/join` → 409 `"그룹은 5개까지 참여할 수 있어요"`
+
+## 7. FCM 그룹 알림 (7~9주차)
+
+data message: `{ type, groupId, groupName, title, body, sentAt, ...extra }` — 알림 모양은 앱이 만든다.
+받는 기기 = 대상 사람의 **로그인 중 + 토큰 있는 기기 전부** (쇼츠 안 보고 있어도 옴).
+
+| type | 언제 | 누구에게 | extra |
+|---|---|---|---|
+| `GROUP_ALERT` | `POST /alerts` 가 새로 기록됐을 때 | 넘은 사람 **빼고** 전원 | userId, kind |
+| `NUDGE` | 넛지 성공 | 대상 1명 | fromUserId |
+| `PROPOSAL` | 제안 등록 | 제안자 빼고 전원 | proposalId |
+| `VOTE_RESULT` | 투표 마감 (통과 / 부결) | 전원 | passed |
+| `LIMIT_APPLIED` | 통과한 한도가 **월요일 00:00 KST** 에 적용 | 전원 | — |
+| `MEMBER_JOINED` · `MEMBER_LEFT` | 새로 가입 / 탈퇴 (이미 멤버 재가입은 없음) | 본인 빼고 전원 | userId |
+| `MEMBER_LOGOUT` | `POST /logout` | 그 사람이 든 모든 그룹, 본인 빼고 | userId |
+
+## 8. 한도 초과 알림 · 넛지 (7주차, G7 · G8)
+
+### `POST /groups/{gid}/alerts  { type: "daily"|"hourly", count }`  (`kind` 로 보내도 됨)
+- `count < 그룹 한도` → 200 `{ sent: false, reason: "below-limit" }` (앱은 `count >= 한도` 일 때 보냄)
+- 처음 → **201** `{ sent: true, alertId }` + GROUP_ALERT
+- 같은 사람 · 같은 날(일간) / 같은 시(시간당, KST) 두 번째 → 200 `{ sent: false, reason: "duplicate" }` — **푸시 안 나감**
+  - 문서 `groups/{gid}/alerts/{uid}_{date}_daily` · `{uid}_{date}_hourly_{HH}` 를 `create()` — 이미 있으면 실패하는 걸로 중복을 막는다
+- type 이상 400 · 멤버 아님 403 · 없는 그룹 404
+
+### `POST /groups/{gid}/nudge  { targetId }`  (`targetUserId` 도 됨)
+- 대상의 **최근 1시간 ≥ 시간당 그룹 한도** 일 때만 (앱 종 표시와 같은 기준). 아니면 409 `"지금은 넛지를 보낼 수 없어요 …"` + `lastHourCount`
+- **보낸 사람–받는 사람 쌍당 10분 1회** (제안서 G7) → 429 `"N분 뒤에 다시 보낼 수 있어요"` + `retryAfterMs`. 쌍마다 따로(A→C, B→C 독립)
+- 자기 자신 400 · 대상이 멤버 아님 404 · 내가 멤버 아님 403
+
+## 9. 한도 변경 제안 · 투표 (8~9주차, G9)
+
+### `GET /groups/{gid}/proposal`
+```json
+{ "state": "none"|"open"|"passed"|"used",
+  "proposal": { "proposalId", "proposedBy", "proposedByName", "dailyLimit", "hourlyLimit", "goal": {...},
+                "createdAt", "closesAt", "yes", "no", "electorate", "required", "myVote": "yes"|"no"|null, "canVote" } | null,
+  "lockedUntil": ms|null, "pendingGoal": { "dailyLimit", "hourlyLimit", "effectiveAt" }|null,
+  "goal": {...}, "approvalRate": 60 }
+```
+- 우선순위 `open` > `passed`(이번 주 통과, 월요일 대기) > `used`(내가 이번 주 제안함) > `none`. 제안이 없어도 **200** (404 아님)
+- `no` = 반대를 누른 수 (미투표는 마감 때 반대로 센다) · `required` = ⌈유권자 × 찬성률⌉
+- `canVote: false` = 투표 중 가입한 사람
+
+### `POST /groups/{gid}/proposals  { dailyLimit, hourlyLimit }` → 201 `{ proposalId }`
+- 409: `"진행 중인 투표가 있어요"` / `"다음 주 한도 투표가 이미 끝났습니다"` / `"이번 주 제안을 이미 사용했습니다"`
+- 400: 한도 형식 · 시간당 > 일간 · `"지금 한도와 같아요"`
+- 그룹 문서 **트랜잭션** — 동시에 눌러도 열린 제안은 하나. 제안자는 찬성으로 들어감. 혼자인 그룹은 바로 통과
+
+### `POST /proposals/{proposalId}/vote  { vote: "yes"|"no" }` → 200
+- 409 `"이미 투표했어요"`(바꾸기 없음) / `"투표가 마감됐어요"` · 403 `"이번 투표의 투표권이 없어요"`
+- 유권자 전원이 투표하면 **그 자리에서 마감** → VOTE_RESULT
+
+### 마감 · 적용
+- 24시간 또는 전원 투표 → 찬성 ≥ required 면 **통과** → `pendingGoal`, `lockedUntil` = **다음 주 월요일 00:00 KST**
+- 월요일 00:00 이 지나면 그룹 한도가 바뀌고 `LIMIT_APPLIED`. 서버가 1분마다 확인 + 그룹을 읽을 때도 확인
+- **투표 중 탈퇴** → 표와 분모에서 모두 빠짐 (남은 사람이 다 투표한 상태가 되면 바로 마감)
+
+> 편지에 적힌 `POST /groups/{gid}/proposal`, `POST /groups/{gid}/proposal/vote { agree }` 도 같은 동작으로 받는다.

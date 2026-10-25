@@ -30,7 +30,16 @@ const { db, admin } = require("../utils/firebase");
 const logger = require("../utils/logger");
 const { verifyToken } = require("../middleware/auth");
 const { saveNickname, resolveDisplayName } = require("../utils/nickname");
-const { groupsRef, membersRef, MAX_MEMBERS_DEFAULT } = require("./groups");
+const {
+  groupsRef,
+  membersRef,
+  MAX_MEMBERS_DEFAULT,
+  MAX_GROUPS_PER_USER,
+} = require("./groups");
+// [7~9주차] 가입 · 탈퇴를 그룹에 알리고(G10), 투표 중 탈퇴자를 집계에서 뺀다(G9)
+const { pushToGroup } = require("../utils/groupPush");
+const groupStats = require("../utils/groupStats");
+const { onMemberLeft } = require("./proposals");
 
 const router = express.Router();
 
@@ -227,6 +236,7 @@ router.post("/groups/join", verifyToken, async (req, res) => {
       const mRef = membersRef(gid).doc(userId);
       const gSnap = await tx.get(gRef);
       const mSnap = await tx.get(mRef);
+      const uSnap = await tx.get(userRef(userId)); // [9주차] 내가 든 그룹 수 (G3: 5개 미만)
 
       if (!gSnap.exists)
         return { status: 404, body: { error: "그룹이 사라졌습니다" } };
@@ -242,6 +252,16 @@ router.post("/groups/join", verifyToken, async (req, res) => {
       const max = g.maxMembers ?? MAX_MEMBERS_DEFAULT;
       if (count >= max) {
         return { status: 409, body: { error: `정원이 찼습니다 (${max}명)` } };
+      }
+      // [9주차] 한 사람은 그룹 5개까지 (G1 · G3). 트랜잭션 안에서 세야 동시에 두 그룹에 들어가도 6개가 안 된다
+      const myGroups = (uSnap.exists ? uSnap.data().groupIds : null) || [];
+      if (myGroups.length >= MAX_GROUPS_PER_USER) {
+        return {
+          status: 409,
+          body: {
+            error: `그룹은 ${MAX_GROUPS_PER_USER}개까지 참여할 수 있어요`,
+          },
+        };
       }
 
       // ── 여기서부터 쓰기 ──
@@ -265,6 +285,7 @@ router.post("/groups/join", verifyToken, async (req, res) => {
       return {
         status: 201,
         body: { status: "ok", groupId: gid, memberCount: count + 1 },
+        groupName: g.name || "그룹",
       };
     });
 
@@ -276,6 +297,18 @@ router.post("/groups/join", verifyToken, async (req, res) => {
       `그룹 가입 — gid: ${gid}, user: ${userId}, code: ${loaded.code}`,
     );
     res.status(result.status).json(result.body);
+
+    // [7주차] 새로 들어왔을 때만 (이미 멤버 200 은 제외) 다른 멤버에게 알림
+    if (result.status === 201) {
+      groupStats.invalidate(gid);
+      pushToGroup(gid, userId, {
+        type: "MEMBER_JOINED",
+        groupName: result.groupName,
+        title: result.groupName,
+        body: `${displayName} 님이 들어왔어요 (${result.body.memberCount}명)`,
+        extra: { userId },
+      });
+    }
   } catch (err) {
     logger.error(`그룹 가입 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -302,6 +335,7 @@ router.delete("/groups/:gid/members/me", verifyToken, async (req, res) => {
       const mRef = membersRef(gid).doc(userId);
       const gSnap = await tx.get(gRef);
       const mSnap = await tx.get(mRef);
+      const nameSnap = gSnap.exists ? gSnap.data().name : null;
 
       if (!mSnap.exists) {
         return { status: 404, body: { error: "이 그룹의 멤버가 아닙니다" } };
@@ -332,6 +366,7 @@ router.delete("/groups/:gid/members/me", verifyToken, async (req, res) => {
           memberCount: left,
           groupDeleted: left === 0,
         },
+        groupName: nameSnap || "그룹",
       };
     });
 
@@ -344,6 +379,20 @@ router.delete("/groups/:gid/members/me", verifyToken, async (req, res) => {
         (result.body.groupDeleted ? " (마지막 멤버 — 그룹 삭제)" : ""),
     );
     res.json(result.body);
+
+    // [7~9주차] 남은 사람이 있을 때만 — 알림(G10) + 열린 투표에서 이 사람 표·분모 빼기(G9)
+    if (!result.body.groupDeleted) {
+      groupStats.invalidate(gid);
+      const name = await resolveDisplayName(userId);
+      pushToGroup(gid, userId, {
+        type: "MEMBER_LEFT",
+        groupName: result.groupName,
+        title: result.groupName,
+        body: `${name} 님이 나갔어요 (${result.body.memberCount}명)`,
+        extra: { userId },
+      });
+      onMemberLeft(gid, userId);
+    }
   } catch (err) {
     logger.error(`그룹 탈퇴 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });

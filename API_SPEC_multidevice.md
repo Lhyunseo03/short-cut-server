@@ -275,6 +275,37 @@ userLogs/{logId}   (기존) + deviceId: string   // 없으면 "legacy"
 
 ---
 
+## 6-1. 6주차 추가 (10/18)
+
+### `GET /sync` 응답에 세 필드 추가
+| 필드 | 뜻 | 앱 |
+|---|---|---|
+| `nickname` | 계정 닉네임 (`users/{uid}.nickname`). 없으면 null | `applyServerNickname` |
+| `appMode` | `"normal"` \| `"hard"`. 저장된 적 없으면 null | `applyServerAppMode` |
+| `limits` | `{ hourlyLimit, dailyLimit, pendingHourlyLimit, pendingDailyLimit, pendingEffectiveAt }`. 한도 문서 없으면 null | 로컬 한도·예약 덮어쓰기 |
+
+`POST /devices/register` 응답에도 `nickname` 이 실린다.
+
+### `POST /mode  { deviceId, mode: "normal" | "hard" }`
+`users/{uid}.appMode` 저장 → 다른 기기(최근 2분 sync)에 COUNT_UPDATED. 잘못된 mode 400.
+
+### `POST /limits/{uid}` — 예약 필드 (10/4 합의 그대로)
+`{ hourlyLimit, dailyLimit, pendingHourlyLimit?, pendingDailyLimit?, pendingEffectiveAt?, deviceId? }`
+- 예약 필드: **없음 = 그대로 / null = 해제 / 숫자 = 저장** (한도는 1 이상 정수, 시각은 ms)
+- 이제 문서를 통째로 덮지 않는다 (merge). 현재 한도만 보내도 예약은 남는다
+- 응답: `{ status: "ok", limits: {...} }` · 저장 뒤 다른 기기에 COUNT_UPDATED (`deviceId` 를 주면 그 기기는 제외)
+
+### `GET /limits/{uid}` — 승격
+`now >= pendingEffectiveAt` 이면 서버가 **트랜잭션으로** 승격해 저장하고 준다.
+새 시간당 = `pendingHourlyLimit ?? hourlyLimit`, 새 일간 = `pendingDailyLimit ?? dailyLimit`, 예약 세 필드 null.
+`/sync` 의 `limits` 도 같은 규칙.
+
+> ⚠ 앱은 **로컬 승격 전에 `/sync` 로 서버 값을 먼저 받아 덮어쓸 것.** 안 그러면 오래 꺼져 있던 기기가
+> 옛 예약으로 승격하며 다른 기기에서 새로 건 예약을 지울 수 있다.
+
+### 보안
+`POST /userlogs` · `POST /violations` — body 의 `userId` 가 토큰 주인과 다르면 **403**.
+
 ## 7. 주차별 서버 배포 상태
 
 | 주차 | 배포되는 것                                                                                                   |
