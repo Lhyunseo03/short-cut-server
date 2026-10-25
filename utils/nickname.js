@@ -24,10 +24,16 @@ const NICKNAME_MAX = 20;
 // 앱이 보낸 nickname 이 쓸 만한 값인지 확인하고 다듬는다.
 // 빈 문자열·공백만·너무 긴 값은 "안 보낸 것"으로 취급한다(400 을 내지 않는다).
 // 닉네임 때문에 그룹 생성이 실패하면 사용자 입장에서 원인을 알기 어렵기 때문.
+// [10/25] "null" · "undefined" 글자도 안 보낸 것으로 본다.
+//   서버가 register · /sync 응답에 nickname: null 을 보내면 안드로이드 JSONObject.optString 이
+//   그걸 **"null" 이라는 글자**로 돌려준다. 앱이 그 글자를 닉네임으로 저장했다가 그룹 만들 때 보내서
+//   users/{uid}.nickname = "null" 이 된 계정이 생겼다 (정은 10/25 발견). 이미 저장된 "null" 도
+//   읽을 때 여기서 걸러지므로 구글 이름 → 이메일 앞부분 → "이름 없음" 폴백을 탄다.
 function normalizeNickname(value) {
   if (typeof value !== "string") return null;
   const t = value.trim();
   if (t.length === 0 || t.length > NICKNAME_MAX) return null;
+  if (t === "null" || t === "undefined") return null;
   return t;
 }
 

@@ -198,7 +198,8 @@ router.get("/sync", verifyToken, async (req, res) => {
       lastShownMilestoneAt: state.lastShownMilestoneAt,
       lastAnsweredMilestoneAt: state.lastAnsweredMilestoneAt,
       // [6주차] 아래 셋은 저장된 적이 없으면 null — 앱은 null 이면 로컬 값을 그대로 둔다
-      nickname: state.nickname, // 계정 닉네임
+      // [10/25] 닉네임이 없으면 키를 안 보낸다 (null → 앱에서 "null" 글자가 되는 문제)
+      ...(state.nickname ? { nickname: state.nickname } : {}),
       appMode: state.appMode, // "normal" | "hard" | null
       limits: limits
         ? {

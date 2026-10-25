@@ -149,11 +149,12 @@ router.post("/devices/register", verifyToken, async (req, res) => {
       `기기 등록 — userId: ${userId}, deviceId: ${deviceId}, ${prev.exists ? "갱신" : "신규"}, 활성 기기 ${deviceCount}대`,
     );
 
+    // [10/25] 닉네임이 없으면 키 자체를 안 보낸다 (null 을 보내면 앱이 "null" 글자로 읽음 — utils/nickname.js 참고)
     res.json({
       status: "ok",
       deviceId,
       deviceCount,
-      nickname: currentNickname,
+      ...(currentNickname ? { nickname: currentNickname } : {}),
       serverTime: now,
     });
   } catch (err) {
