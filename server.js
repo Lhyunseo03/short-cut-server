@@ -684,8 +684,28 @@ app.post("/limits/:userId", verifyToken, verifySelf, async (req, res) => {
         .json({ error: "hourlyLimit, dailyLimit은 숫자여야 합니다" });
     }
 
+    // [11/1] 그룹 한도와 같은 규칙 — 시간당 한도가 일간 한도보다 크면 시간당 한도가 영원히 안 걸린다
+    if (hourlyLimit > dailyLimit) {
+      return res
+        .status(400)
+        .json({ error: "hourlyLimit 은 dailyLimit 보다 클 수 없습니다" });
+    }
+
     const pending = parsePending(req.body);
     if (pending.error) return res.status(400).json({ error: pending.error });
+
+    // [11/1] 예약도 같은 규칙. 한쪽만 예약하면 다른 쪽은 지금 값으로 이어지므로(승격 규칙 ??) 그걸로 비교한다
+    const pH = pending.fields.pendingHourlyLimit;
+    const pD = pending.fields.pendingDailyLimit;
+    if (typeof pH === "number" || typeof pD === "number") {
+      const futureHourly = typeof pH === "number" ? pH : hourlyLimit;
+      const futureDaily = typeof pD === "number" ? pD : dailyLimit;
+      if (futureHourly > futureDaily) {
+        return res.status(400).json({
+          error: "pendingHourlyLimit 은 pendingDailyLimit 보다 클 수 없습니다",
+        });
+      }
+    }
 
     const now = Date.now();
     // firebase 에 저장 — 보낸 필드만 (merge)

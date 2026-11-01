@@ -85,6 +85,7 @@ async function settle(gid, now = Date.now()) {
       gUpdate.goal = newGoal;
       gUpdate.pendingGoal = null;
       gUpdate.lockedUntil = null;
+      gUpdate.passedProposalId = null; // [11/1] 적용이 끝났으니 "통과한 제안" 표시도 끝
       gUpdate.goalHistory = admin.firestore.FieldValue.arrayUnion({
         from: pg.effectiveAt,
         dailyLimit: newGoal.dailyLimit,
@@ -118,6 +119,8 @@ async function settle(gid, now = Date.now()) {
             effectiveAt,
           };
           gUpdate.lockedUntil = effectiveAt;
+          // [11/1] 통과한 제안을 기억 — 월요일까지 GET /proposal 이 표수를 보여줄 수 있게 (정은 요청)
+          gUpdate.passedProposalId = pSnap.id;
         }
         out.push({ kind: "result", passed, p, t });
       }
@@ -219,6 +222,36 @@ async function proposalStatus(gid, userId, now) {
   else if (g.lockedUntil && g.lockedUntil > now) state = "passed";
   else if (m.me.lastProposalWeek === weekKey(now)) state = "used";
 
+  // [11/1] passed 일 때도 통과한 제안을 준다 — 앱이 "찬성 N / 반대 M" 을 보여준다 (정은 요청)
+  //   표수는 마감 때 저장한 result (그 뒤 탈퇴가 있어도 결과는 바뀌지 않는다).
+  //   no = 반대를 누른 수. 누가 어디에 찍었는지는 주지 않는다 (myVote 는 내 표만).
+  if (state === "passed") {
+    const pSnap = await passedProposal(gid, g);
+    if (pSnap) {
+      const p = pSnap.data();
+      const r = p.result || tally(p, g.approvalRate);
+      const inElectorate = (p.electorate || []).includes(userId);
+      proposal = {
+        proposalId: pSnap.id,
+        status: "passed",
+        proposedBy: p.proposedBy,
+        proposedByName: await resolveDisplayName(p.proposedBy),
+        dailyLimit: p.dailyLimit,
+        hourlyLimit: p.hourlyLimit,
+        goal: { dailyLimit: p.dailyLimit, hourlyLimit: p.hourlyLimit },
+        createdAt: p.createdAt,
+        closesAt: p.closesAt,
+        closedAt: p.closedAt ?? null,
+        yes: r.yes,
+        no: r.no,
+        electorate: r.electorate,
+        required: r.required,
+        myVote: inElectorate ? (p.votes || {})[userId] ?? null : null,
+        canVote: false, // 마감된 제안 — 더 투표할 수 없다
+      };
+    }
+  }
+
   return {
     body: {
       groupId: gid,
@@ -231,6 +264,23 @@ async function proposalStatus(gid, userId, now) {
       serverTime: now,
     },
   };
+}
+
+// 이번 주 통과한 제안 문서. passedProposalId 가 없으면(11/1 이전에 통과한 그룹)
+// 그 그룹의 제안 중 통과한 가장 최근 것을 찾는다 (groupId 단일 필드 조건이라 색인 추가 불필요).
+async function passedProposal(gid, g) {
+  if (g.passedProposalId) {
+    const s = await proposalsRef().doc(g.passedProposalId).get();
+    if (s.exists) return s;
+  }
+  const snap = await proposalsRef().where("groupId", "==", gid).get();
+  let best = null;
+  snap.forEach((d) => {
+    const p = d.data();
+    if (p.status !== "passed") return;
+    if (!best || (p.closedAt ?? 0) > (best.data().closedAt ?? 0)) best = d;
+  });
+  return best;
 }
 
 router.get("/groups/:gid/proposal", verifyToken, async (req, res) => {
