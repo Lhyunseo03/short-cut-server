@@ -17,6 +17,7 @@ const { HOURLY_TTL_MS } = require("./intervention");
 // [6주차] 닉네임 · 한도(예약 포함)도 /sync 로 같이 내려준다
 const { normalizeNickname } = require("../utils/nickname");
 const { readLimits } = require("../utils/limits");
+const presence = require("../utils/presence");
 const {
   isValidDeviceId,
   countActiveDevices,
@@ -184,6 +185,8 @@ router.get("/sync", verifyToken, async (req, res) => {
           return doc.ref.update({ lastSyncAt: now, lastSeenAt: now });
       })
       .catch((err) => logger.warn(`lastSyncAt 갱신 실패 — ${err.message}`));
+    // [11/5] /sync 도 "살아 있다" 신호 — 포인트 수상 제외(신호 공백 3시간) 판정용
+    presence.noteAlive(userId, now).catch((err) => logger.warn(`aliveAt 갱신 실패 — ${err.message}`));
 
     res.json({
       serverTime: now, // 앱이 기기 시계 차이를 보정할 때 쓸 수 있음

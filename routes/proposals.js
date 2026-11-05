@@ -496,8 +496,13 @@ async function sweep() {
     sweeping = false;
   }
 }
+// [11/5] 같은 1분 타이머로 포인트 정산(매일 00:05 · 월요일 주간 마감)도 돌린다
+const settlement = require("../utils/settlement");
 function startSweeper(intervalMs = 60 * 1000) {
-  const t = setInterval(sweep, intervalMs);
+  const t = setInterval(() => {
+    sweep();
+    settlement.runDue();
+  }, intervalMs);
   if (t.unref) t.unref();
   return t;
 }

@@ -40,6 +40,7 @@ const {
 const { pushToGroup } = require("../utils/groupPush");
 const groupStats = require("../utils/groupStats");
 const { onMemberLeft } = require("./proposals");
+const { weekKey } = require("../utils/week");
 
 const router = express.Router();
 
@@ -274,6 +275,9 @@ router.post("/groups/join", verifyToken, async (req, res) => {
         lastScrollAt: null,
         countsUpdatedAt: now,
         lastSeenAt: now,
+        // [11/5 포인트] 주중 가입 = 그 주는 대기 (점수 없음 · 벌금 없음 · 순위·벌금통 제외).
+        // 다음 월요일이 되면 waitingWeek 가 지난 주라 저절로 참가 (1,000점). 재가입도 똑같이 대기
+        waitingWeek: weekKey(now),
       });
       tx.update(gRef, { memberCount: count + 1 });
       tx.set(

@@ -49,6 +49,8 @@ const groupStats = require("../utils/groupStats");
 const { toKSTDateString } = require("../utils/time");
 // 9주차 — 월요일 한도 적용이 지났으면 읽기 전에 처리 (routes/proposals.js)
 const { settle } = require("./proposals");
+// 11/5 포인트 — 점수 · 벌금통 · 지난주 결과
+const points = require("../utils/points");
 
 // 그룹 문서에 적용 시각이 지난 pendingGoal 이 있으면 적용하고 다시 읽는다.
 // sweeper(1분)를 기다리지 않고 월요일 0시 직후 첫 조회부터 새 한도가 보이게.
@@ -262,13 +264,23 @@ router.get("/groups", verifyToken, async (req, res) => {
     );
 
     // [6주차] 그룹 카드의 "내 오늘 카운트" — 모든 기기 합계. 그룹마다 같은 값이라 한 번만 센다
-    const { todayCount } = await groupStats.liveCounts(userId, Date.now());
+    const now = Date.now();
+    const { todayCount } = await groupStats.liveCounts(userId, now);
+
+    // [11/5] 그룹마다 내 이번 주 점수. 대기 중이면 null — **키는 꼭 넣는다** (앱이 "키 있고 null" = 대기로 읽음)
+    const live = docs.filter((d) => d.exists);
+    const myMemberDocs = live.length
+      ? await db.getAll(...live.map((d) => membersRef(d.id).doc(userId)))
+      : [];
+    const wk = points.weekKey(now);
 
     // 이미 사라진 그룹 ID 가 배열에 남아 있을 수 있다 (탈퇴·해체 경합).
     // 목록에서 조용히 뺀다.
-    const groups = docs
-      .filter((d) => d.exists)
-      .map((d) => ({ ...toGroupSummary(d), myTodayCount: todayCount }));
+    const groups = live.map((d, i) => ({
+      ...toGroupSummary(d),
+      myTodayCount: todayCount,
+      myPoints: points.pointsOf(myMemberDocs[i].exists ? myMemberDocs[i].data() : null, wk),
+    }));
     groups.sort((a, b) => b.createdAt - a.createdAt); // 최근 만든 것부터
 
     res.json({ count: groups.length, maxGroups: MAX_GROUPS_PER_USER, groups });
@@ -302,9 +314,11 @@ async function namedMembers(gid) {
   const ids = [];
   const fallbacks = {};
   const joined = {};
+  const raw = {};
   snap.forEach((doc) => {
     ids.push(doc.id);
     const m = doc.data();
+    raw[doc.id] = m; // 11/5: 점수 · 대기 계산용 (weekPoints · waitingWeek)
     if (m.displayName && m.displayName !== "이름 없음")
       fallbacks[doc.id] = m.displayName;
     joined[doc.id] = m.joinedAt ?? null;
@@ -315,6 +329,7 @@ async function namedMembers(gid) {
       userId: uid,
       displayName: names.get(uid) || "이름 없음",
       joinedAt: joined[uid],
+      member: raw[uid],
     }))
     .sort((a, b) => (a.joinedAt ?? 0) - (b.joinedAt ?? 0));
 }
@@ -344,10 +359,16 @@ router.get("/groups/:gid", verifyToken, async (req, res) => {
     const members = await namedMembers(gid);
     const rows = await groupStats.memberRows(gid, members, now);
 
+    const pot = await points.potToday(gid, now);
+    const lw = g.gDoc.data().lastWeek;
     res.json({
       group: toGroupSummary(g.gDoc),
       memberCount: rows.length,
       members: withIsMe(rows, userId),
+      // [11/5] 포인트 — 오늘 벌금통 · 지난주 결과 · 이번 주 월요일
+      pot,
+      lastWeek: lw ? { weekStart: lw.weekStart, ranking: lw.ranking || [] } : null,
+      weekStart: points.weekKey(now),
       serverTime: now,
     });
   } catch (err) {
@@ -378,6 +399,8 @@ router.get("/groups/:gid/status", verifyToken, async (req, res) => {
       goal, // 앱이 빨강/초록(일간) · 종(시간당) 판단에 쓴다
       date: toKSTDateString(now),
       members: withIsMe(rows, userId),
+      pot: await points.potToday(gid, now), // [11/5] 홈 벌금통 30초 갱신 (POINTS_API.md §8 질문 1)
+      weekStart: points.weekKey(now),
       serverTime: now,
     });
   } catch (err) {
@@ -481,54 +504,120 @@ router.get("/groups/:gid/members/:uid", verifyToken, async (req, res) => {
   }
 });
 
-// ═════════════════════════════════════════════════════════════
-// GET /groups/:gid/members/:uid/daily?month=YYYY-MM — 구성원 일간 통계 (G6)
-// ═════════════════════════════════════════════════════════════
-// 한 달 날짜별 스크롤 합계 + 그룹 한도. 앱이 그룹 일간 한도와 비교해
-// 이하 = 초록 / 초과 = 빨강 으로 칠한다. month 를 안 주면 이번 달(KST).
+// ─────────────────────────────────────────────────────────────
+// 구성원 통계 공통 — 내가 멤버, 대상도 멤버
+// ─────────────────────────────────────────────────────────────
+async function loadTarget(req) {
+  const { gid, uid } = req.params;
+  const g = await loadGroupAsMember(gid, req.userId);
+  if (g.error) return g;
+  if (typeof uid !== "string" || uid.length === 0 || uid.length > 128) {
+    return { status: 400, error: "userId 가 잘못되었습니다" };
+  }
+  const target = await membersRef(gid).doc(uid).get();
+  if (!target.exists) return { status: 404, error: "이 그룹의 멤버가 아닙니다" };
+  return { gid, uid, gData: g.gDoc.data() };
+}
+
+const DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+// ═════════════════════════════════════════════════════════════
+// GET /groups/:gid/members/:uid/daily?date=YYYY-MM-DD — 그룹원 하루 (11/5, POINTS_API.md §10)
+// ═════════════════════════════════════════════════════════════
+// 개인 /stats/{uid}/daily 와 같은 모양 + 그날 그룹 한도 + 그날 이 그룹 팝업(alert) 시각.
+// (6주차의 ?month= 달력은 앱이 안 써서 지우고 /monthly 로 옮겼다)
 router.get("/groups/:gid/members/:uid/daily", verifyToken, async (req, res) => {
   try {
-    const userId = req.userId;
-    const { gid, uid } = req.params;
-    const g = await loadGroupAsMember(gid, userId);
-    if (g.error) return res.status(g.status).json({ error: g.error });
-
-    if (typeof uid !== "string" || uid.length === 0 || uid.length > 128) {
-      return res.status(400).json({ error: "userId 가 잘못되었습니다" });
-    }
-    const target = await membersRef(gid).doc(uid).get();
-    if (!target.exists) {
-      return res.status(404).json({ error: "이 그룹의 멤버가 아닙니다" });
-    }
+    const t = await loadTarget(req);
+    if (t.error) return res.status(t.status).json({ error: t.error });
 
     const now = Date.now();
-    const month = req.query.month ?? toKSTDateString(now).slice(0, 7);
-    if (!MONTH_RE.test(month)) {
-      return res
-        .status(400)
-        .json({ error: "month 는 YYYY-MM 형식이어야 합니다" });
+    const date = req.query.date ?? toKSTDateString(now);
+    if (!DATE_RE.test(date)) {
+      return res.status(400).json({ error: "date 는 YYYY-MM-DD 형식이어야 합니다" });
     }
 
-    const gData = g.gDoc.data();
-    const days = (await groupStats.monthlyDailyCounts(uid, month, now)).map(
-      (d) => ({
-        ...d,
-        // 9주차: 그날 적용 중이던 그룹 일간 한도 (투표로 바뀌기 전 날짜는 옛 한도)
-        dailyLimit: groupStats.goalOnDate(gData, d.date).dailyLimit,
-      }),
-    );
-    const goal = gData.goal || null;
+    const [stats, alertSnap] = await Promise.all([
+      groupStats.dayStats(t.uid, date),
+      groupsRef().doc(t.gid).collection("alerts")
+        .where("userId", "==", t.uid)
+        .where("date", "==", date)
+        .get(),
+    ]);
+    const goal = groupStats.goalOnDate(t.gData, date);
+    const alerts = alertSnap.docs
+      .map((d) => d.data())
+      .filter((a) => typeof a.at === "number")
+      .sort((x, y) => x.at - y.at)
+      .map((a) => ({ type: a.kind || a.type, stage: a.stage ?? null, at: a.at, delta: a.delta ?? 0 }));
+
     res.json({
-      groupId: gid,
-      userId: uid,
-      month,
-      goal, // 지금 그룹 한도
-      days, // [{ date: "2026-10-01", count: 37, dailyLimit: 200 }, ...] 오늘까지 — 색은 그날 dailyLimit 과 비교
+      groupId: t.gid,
+      userId: t.uid,
+      date,
+      totalScroll: stats.totalScroll,
+      hourlyGraph: stats.hourlyGraph,
+      byPlatform: stats.byPlatform,
+      dailyLimit: goal.dailyLimit,
+      hourlyLimit: goal.hourlyLimit,
+      alerts,
       serverTime: now,
     });
   } catch (err) {
-    logger.error(`구성원 일간 통계 조회 실패 — ${err.message}`);
+    logger.error(`구성원 하루 통계 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════
+// GET /groups/:gid/members/:uid/monthly?date=YYYY-MM — 그룹원 달력 (G6, 11/5 §10)
+// ═════════════════════════════════════════════════════════════
+// 날짜별 스크롤 합 + 그날 그룹 일간 한도 (투표로 바뀌기 전 날짜는 옛 한도). 미래 날짜는 안 준다.
+router.get("/groups/:gid/members/:uid/monthly", verifyToken, async (req, res) => {
+  try {
+    const t = await loadTarget(req);
+    if (t.error) return res.status(t.status).json({ error: t.error });
+
+    const now = Date.now();
+    const month = req.query.date ?? req.query.month ?? toKSTDateString(now).slice(0, 7);
+    if (!MONTH_RE.test(month)) {
+      return res.status(400).json({ error: "date 는 YYYY-MM 형식이어야 합니다" });
+    }
+    const days = (await groupStats.monthlyDailyCounts(t.uid, month, now)).map((d) => ({
+      ...d,
+      dailyLimit: groupStats.goalOnDate(t.gData, d.date).dailyLimit,
+    }));
+    res.json({ groupId: t.gid, userId: t.uid, month, goal: t.gData.goal || null, days, serverTime: now });
+  } catch (err) {
+    logger.error(`구성원 달력 조회 실패 — ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════
+// GET /groups/:gid/points/history?days=7 — 최근 정산 (11/5, POINTS_API.md §3)
+// ═════════════════════════════════════════════════════════════
+router.get("/groups/:gid/points/history", verifyToken, async (req, res) => {
+  try {
+    const g = await loadGroupAsMember(req.params.gid, req.userId);
+    if (g.error) return res.status(g.status).json({ error: g.error });
+    const n = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 14);
+    const snap = await groupsRef().doc(req.params.gid).collection("potDays").get();
+    const days = snap.docs
+      .map((d) => d.data())
+      .filter((p) => p.settled)
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .slice(0, n)
+      .map((p) => ({
+        date: p.date,
+        pot: p.pot ?? (p.fines || 0) + (p.carriedIn || 0),
+        winners: p.winners || [],
+        carried: p.carriedOut || 0,
+      }));
+    res.json({ groupId: req.params.gid, days });
+  } catch (err) {
+    logger.error(`정산 이력 조회 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });

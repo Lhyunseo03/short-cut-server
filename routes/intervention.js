@@ -30,6 +30,8 @@ const { isValidDeviceId } = require("./devices");
 // [7주차] 로그아웃을 그룹에 알린다 (G11)
 const { pushToGroup } = require("../utils/groupPush");
 const { resolveDisplayName } = require("../utils/nickname");
+// [11/5 포인트] 수상 제외 판정 기록 — 권한 꺼짐 누적 · 신호 공백 · 로그아웃 날짜
+const presence = require("../utils/presence");
 
 // [7주차] 권한 상태가 바뀐 순간을 기록 — 그룹 화면의 "권한 꺼짐(… 이후)" (G11)
 //   켜짐 → 꺼짐 : permissionsOffSince = 지금
@@ -267,12 +269,16 @@ router.post("/heartbeat", verifyToken, async (req, res) => {
       return res.status(404).json({ error: "등록되지 않은 기기입니다" });
     }
 
+    // [11/5] permissionFields(7주차) 대신 presence.permissionUpdate — 같은 규칙 + 그날 꺼진 시간을 기기별로 쌓는다
     const data = {
       lastSeenAt: now,
-      ...permissionFields(doc.data(), permissionsOk, now),
+      ...presence.permissionUpdate(doc.data(), permissionsOk, now),
     };
     await ref.update(data);
     res.json({ status: "ok", serverTime: now });
+
+    // [11/5] "살아 있다" 신호 — 신호 공백 3시간 판정용 (응답 뒤, 실패해도 무시)
+    presence.noteAlive(req.userId, now).catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
   } catch (err) {
     logger.error(`heartbeat 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -303,7 +309,10 @@ router.post("/logout", verifyToken, async (req, res) => {
       return res.status(404).json({ error: "등록되지 않은 기기입니다" });
     }
 
-    await ref.update({ loggedOutAt: now, lastSeenAt: now });
+    // [11/5] 꺼져 있던 권한 시간은 로그아웃 순간까지 쌓아 둔다
+    await ref.update({ loggedOutAt: now, lastSeenAt: now, ...presence.permissionUpdate(doc.data(), undefined, now) });
+    // [11/5] 그날 로그아웃 기록 → 그날 벌금통 수상 제외
+    await presence.noteLogout(req.userId, now);
 
     logger.info(`로그아웃 — userId: ${req.userId}, deviceId: ${deviceId}`);
     res.json({ status: "ok", loggedOutAt: now });

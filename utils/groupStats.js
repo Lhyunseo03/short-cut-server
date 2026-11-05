@@ -13,6 +13,16 @@
 
 const { db } = require("./firebase");
 const { toKSTDateString, startOfKSTDay } = require("./time");
+// 11/5 포인트 — 점수 · 대기 · 오늘 수상 가능 여부
+const points = require("./points");
+const presence = require("./presence");
+
+// 멤버 행에 이번 주 점수 · 대기를 붙인다. 점수는 캐시하지 않는다 — 멤버 문서를 매번 새로 읽으므로
+// 벌금이 깎이면 다음 새로고침에 바로 보인다.
+function withPoints(row, m, now) {
+  const wk = points.weekKey(now);
+  return { ...row, points: points.pointsOf(m.member, wk), waiting: points.isWaiting(m.member, wk) };
+}
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const CACHE_TTL_MS = 15 * 1000;
@@ -112,12 +122,18 @@ async function memberRows(gid, members, now = Date.now()) {
   if (hit && hit.key === key && now - hit.at < CACHE_TTL_MS) {
     // 캐시는 숫자만 재사용한다. 이름은 매번 지금 값으로 — 닉네임을 바꾸면 15초 기다리지 않고 바로 보이게
     const byId = new Map(members.map((m) => [m.userId, m]));
-    return hit.rows.map((r) => ({
-      ...r,
-      displayName: byId.get(r.userId).displayName,
-      nickname: byId.get(r.userId).displayName,
-      joinedAt: byId.get(r.userId).joinedAt ?? null,
-    }));
+    return hit.rows.map((r) =>
+      withPoints(
+        {
+          ...r,
+          displayName: byId.get(r.userId).displayName,
+          nickname: byId.get(r.userId).displayName,
+          joinedAt: byId.get(r.userId).joinedAt ?? null,
+        },
+        byId.get(r.userId),
+        now,
+      ),
+    );
   }
 
   const ids = members.map((m) => m.userId);
@@ -127,9 +143,10 @@ async function memberRows(gid, members, now = Date.now()) {
 
   const rows = await Promise.all(
     members.map(async (m, i) => {
-      const [c, dv] = await Promise.all([
+      const [c, dv, el] = await Promise.all([
         liveCounts(m.userId, now),
         deviceSummary(m.userId),
+        presence.eligibility(m.userId, toKSTDateString(now), now),
       ]);
       const u = userDocs[i] && userDocs[i].exists ? userDocs[i].data() : {};
       return {
@@ -145,12 +162,16 @@ async function memberRows(gid, members, now = Date.now()) {
         permissionsOk: dv.permissionsOk,
         loggedOut: dv.loggedOut,
         loggedOutAt: dv.loggedOutAt,
+        // 오늘(지금까지) 수상 가능한가 — false 면 앱이 "오늘 제외" 뱃지 (로그아웃 · 권한 꺼짐 30분 · 공백 3시간)
+        eligible: el.eligible,
+        ineligibleReasons: el.reasons,
         countsUpdatedAt: now,
       };
     }),
   );
   cache.set(gid, { at: now, key, rows });
-  return rows;
+  const byId = new Map(members.map((m) => [m.userId, m]));
+  return rows.map((r) => withPoints(r, byId.get(r.userId), now));
 }
 
 // 테스트·탈퇴 직후 등에서 캐시를 비울 때
@@ -249,7 +270,38 @@ async function monthlyDailyCounts(userId, month, now) {
   return days;
 }
 
+// 11/5 — 한 사람의 하루 (개인 /stats/{uid}/daily 와 같은 모양, POINTS_API.md §10)
+//   totalScroll · hourlyGraph [{hour, scrollCount}] 24칸 · byPlatform
+async function dayStats(userId, date) {
+  const start = startOfKSTDay(date);
+  const end = start + 24 * 60 * 60 * 1000;
+  const snap = await db
+    .collection("userLogs")
+    .where("userId", "==", userId)
+    .where("timestamp", ">=", start)
+    .where("timestamp", "<", end)
+    .get();
+  const hourly = new Array(24).fill(0);
+  const byPlatform = {};
+  let total = 0;
+  snap.forEach((doc) => {
+    const l = doc.data();
+    const n = Number(l.scrollCount) || 0;
+    const h = new Date((Number(l.timestamp) || 0) + 9 * 60 * 60 * 1000).getUTCHours();
+    hourly[h] += n;
+    total += n;
+    const p = l.platform || "youtube";
+    byPlatform[p] = (byPlatform[p] || 0) + n;
+  });
+  return {
+    totalScroll: total,
+    hourlyGraph: hourly.map((scrollCount, hour) => ({ hour, scrollCount })),
+    byPlatform,
+  };
+}
+
 module.exports = {
+  dayStats,
   liveCounts,
   deviceSummary,
   memberRows,

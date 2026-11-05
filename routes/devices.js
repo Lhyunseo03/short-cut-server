@@ -26,6 +26,8 @@ const { verifyToken } = require("../middleware/auth");
 // 표시 이름은 users/{uid}.nickname 한 곳에 저장한다 (2026-09-28 정은 요청).
 // 앱이 로그인 직후 register 를 부르면서 같이 보내므로 여기서 받아 둔다.
 const { saveNickname, normalizeNickname } = require("../utils/nickname");
+// [11/5 포인트] 권한 꺼짐 누적 · 신호 공백 (utils/presence.js)
+const presence = require("../utils/presence");
 
 const router = express.Router();
 
@@ -117,20 +119,15 @@ router.post("/devices/register", verifyToken, async (req, res) => {
     if (deviceName !== undefined) data.deviceName = deviceName;
     if (fcmToken !== undefined) data.fcmToken = fcmToken;
     if (permissionsOk !== undefined) {
-      data.permissionsOk = permissionsOk;
-      // [7주차] 권한이 꺼진 시각 (G11 "권한 꺼짐(… 이후)") — heartbeat 와 같은 규칙.
-      // 이미 꺼져 있던 기기면 처음 꺼진 시각을 유지, 켜지면 null.
-      const p = prev.exists ? prev.data() : {};
-      data.permissionsOffSince = permissionsOk
-        ? null
-        : p.permissionsOk === false && p.permissionsOffSince
-          ? p.permissionsOffSince
-          : now;
+      // [7주차 → 11/5] 권한이 꺼진 시각 + 그날 꺼져 있던 시간 누적 — heartbeat 와 같은 규칙 (utils/presence.js)
+      Object.assign(data, presence.permissionUpdate(prev.exists ? prev.data() : {}, permissionsOk, now));
     }
 
     // merge: true — 보낸 필드만 갱신하고 나머지는 그대로 둔다.
     // 이게 없으면 fcmToken 만 보내는 onNewToken 호출 때 deviceName 이 날아간다.
     await ref.set(data, { merge: true });
+    // [11/5] 등록도 "살아 있다" 신호
+    presence.noteAlive(userId, now).catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
 
     // 닉네임은 기기가 아니라 사용자 것이므로 users/{uid} 에 저장한다.
     // 안 보냈거나 형식이 이상하면 아무것도 쓰지 않는다 (기존 값 보존).
