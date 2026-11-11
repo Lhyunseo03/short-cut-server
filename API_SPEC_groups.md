@@ -387,11 +387,11 @@ data message: `{ type, groupId, groupName, title, body, sentAt, ...extra }` — 
 | 항목 | 서버 구현 |
 |---|---|
 | 점수 저장 | `members/{uid}.weekPoints { "주 월요일 날짜": 점수 }`. 키 없으면 1,000 → **월요일 리셋을 따로 쓰지 않아도 새 주엔 1,000** |
-| 대기 | 가입할 때 `members/{uid}.waitingWeek` = 가입한 주. 그 주 동안 `points: null` · 차감 없음 · 정산 제외. 다음 주엔 저절로 참가. 만든 사람 · 배포 전 멤버는 없음(참가) |
+| 대기 | 가입할 때 `members/{uid}.waitingWeek` = 가입한 주. 그 주 동안 `points: null` · 차감 없음 · 정산 제외. 다음 주엔 저절로 참가. **11/11부터 만든 사람도 첫 주 대기** (새 그룹 첫 주 = 전원 연습, 그 주 `lastWeek`·`WEEK_RESULT` 없음). 배포 전 멤버는 참가 |
 | 벌금 | `POST /groups/{gid}/alerts { alertId, type, count, stage, at }` → `{ points, delta, sent, reason? }`. reason = below-limit · duplicate(같은 alertId) · duplicate-stage(같은 사람·종류·단계가 시간당 60분 안 / 일간 같은 날) · waiting |
 | 벌금통 | `groups/{gid}/potDays/{date} { fines, carriedIn, settled, winners, carriedOut }`. 날짜는 `at` 기준, 이미 정산된 날이면 다음 날로 |
 | 정산 | 1분 타이머(proposals sweeper)가 `D+1 00:05` 지난 날 D 를 그룹마다 차례로 — 놓친 날도 따라잡음. 그룹 전체 훑기는 정산할 날이 바뀔 때만(하루 1번) |
-| 수상 제외 | 그날 ① `users/{uid}.logoutDays` ② 기기 하나라도 `permOffMs` ≥ 30분 ③ `users/{uid}.gapMs` ≥ 3시간 (신호 = heartbeat · /sync · 등록, 15분까지는 공백 아님. 신호가 한 번도 없던 사람은 하루 전체 공백). 상수: `utils/presence.js` |
+| 수상 제외 | 그날 ① `users/{uid}.logoutDays` ② 기기 하나라도 `permOffMs` ≥ 30분 ③ `users/{uid}.gapMs` ≥ 3시간 (신호 = heartbeat · /sync · 등록, 15분까지는 공백 아님. 신호가 한 번도 없던 사람은 하루 전체 공백. **11/11 절전 보정:** 직전 신호 시각 ≥ 기기 `installedAt`(heartbeat 가 보냄, 기기 문서에 저장) 이면 그 사이는 공백 아님). 상수: `utils/presence.js` |
 | 주간 마감 | 일요일 정산 때 같이 — 이월분 버림, `groups/{gid}.lastWeek { weekStart, ranking[{userId, nickname, points, streak?}] }` (동점은 그 주 스크롤 합 적은 순), FCM `WEEK_RESULT` (myRank · myPoints) |
 | 지급 | FCM `POINTS_AWARDED` (delta) — 수상자에게만 |
 | 응답 | `GET /groups` 각 그룹 `myPoints`(대기면 **키 있고 null**) · `GET /groups/{gid}` `pot` `lastWeek` `weekStart` · 멤버 행 `points` `waiting` `eligible` `ineligibleReasons` · `/status` 에 `pot` |

@@ -153,8 +153,11 @@ async function settleDay(gid, D, now = Date.now()) {
       const prevTop = new Map(((g.lastWeek && g.lastWeek.ranking) || []).filter((r) => r.streak).map((r) => [r.userId, r.streak]));
       const top = rows.length ? rows[0].points : null;
       for (const r of rows) if (r.points === top) r.streak = (prevTop.get(r.userId) || 0) + 1;
-      ranking = rows;
-      gUpdate.lastWeek = { weekStart: wk, ranking, closedAt: now };
+      // [11/11] 그 주 참가자가 없으면(새 그룹의 첫 주 = 전원 대기) 주간 결과도 없다 — lastWeek 를 덮지 않고 WEEK_RESULT 도 안 보낸다
+      if (rows.length > 0) {
+        ranking = rows;
+        gUpdate.lastWeek = { weekStart: wk, ranking, closedAt: now };
+      }
     }
     tx.update(gRef, gUpdate);
     return { pot, winners, carriedOut, discarded: sunday ? leftover : 0, ranking, groupName: g.name || "그룹" };

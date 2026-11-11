@@ -127,7 +127,9 @@ router.post("/devices/register", verifyToken, async (req, res) => {
     // 이게 없으면 fcmToken 만 보내는 onNewToken 호출 때 deviceName 이 날아간다.
     await ref.set(data, { merge: true });
     // [11/5] 등록도 "살아 있다" 신호
-    presence.noteAlive(userId, now).catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
+    presence
+      .noteAlive(userId, now, prev.exists ? (prev.data().installedAt ?? null) : null)
+      .catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
 
     // 닉네임은 기기가 아니라 사용자 것이므로 users/{uid} 에 저장한다.
     // 안 보냈거나 형식이 이상하면 아무것도 쓰지 않는다 (기존 값 보존).

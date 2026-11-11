@@ -52,13 +52,19 @@ function addToDayMap(map, add, now) {
 // ─────────────────────────────────────────────────────────────
 // ③ 신호 — heartbeat · sync · register 가 부른다. 실패해도 본 요청엔 영향 없게 호출부에서 catch.
 // ─────────────────────────────────────────────────────────────
-async function noteAlive(userId, now = Date.now()) {
+// installedAt: 신호를 보낸 기기의 앱 최초 설치 시각(ms). heartbeat 가 보내고, sync · 등록은 기기 문서에 저장된 값을 넘긴다.
+// [11/11 절전 보정, POINTS_API.md §4-1] 직전 신호 시각 ≥ installedAt 이면 그 사이에 앱을 지웠다 깐 게 아니다
+//   → 공백으로 치지 않는다. 밤에 Doze 로 heartbeat 가 몇 시간 밀려도 제외되지 않게.
+//   폰이 꺼져 있거나 절전이면 어차피 스크롤도 못 한다.
+//   잡히는 것: 지우고 다시 깔기(installedAt 이 직전 신호보다 뒤) · 지우고 안 깔기(신호가 다시 안 옴 → 마지막 신호 뒤 전부 공백)
+async function noteAlive(userId, now = Date.now(), installedAt = null) {
   const ref = db.collection("users").doc(userId);
   const snap = await ref.get();
   const u = snap.exists ? snap.data() : {};
   const last = typeof u.aliveAt === "number" ? u.aliveAt : null;
   const update = { aliveAt: now };
-  if (last !== null && now - last > ALIVE_GRACE_MS) {
+  const sameInstall = typeof installedAt === "number" && installedAt > 0 && last !== null && last >= installedAt;
+  if (last !== null && now - last > ALIVE_GRACE_MS && !sameInstall) {
     update.gapMs = addToDayMap(u.gapMs, splitByDay(last + ALIVE_GRACE_MS, now), now);
   }
   await ref.set(update, { merge: true });

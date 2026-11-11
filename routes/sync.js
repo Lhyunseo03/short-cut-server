@@ -181,12 +181,15 @@ router.get("/sync", verifyToken, async (req, res) => {
       .doc(deviceId)
       .get()
       .then((doc) => {
-        if (doc.exists)
-          return doc.ref.update({ lastSyncAt: now, lastSeenAt: now });
+        if (!doc.exists) return;
+        // [11/11] 이 기기의 설치 시각(heartbeat 가 저장)으로 절전 보정 — 아침 첫 신호가 /sync 여도 밤사이를 공백으로 안 친다
+        presence
+          .noteAlive(userId, now, doc.data().installedAt ?? null)
+          .catch((err) => logger.warn(`aliveAt 갱신 실패 — ${err.message}`));
+        return doc.ref.update({ lastSyncAt: now, lastSeenAt: now });
       })
       .catch((err) => logger.warn(`lastSyncAt 갱신 실패 — ${err.message}`));
-    // [11/5] /sync 도 "살아 있다" 신호 — 포인트 수상 제외(신호 공백 3시간) 판정용
-    presence.noteAlive(userId, now).catch((err) => logger.warn(`aliveAt 갱신 실패 — ${err.message}`));
+    // [11/5] /sync 도 "살아 있다" 신호 — 위 .then 안에서 남긴다 (11/11: 기기 설치 시각이 필요해서 옮김)
 
     res.json({
       serverTime: now, // 앱이 기기 시계 차이를 보정할 때 쓸 수 있음

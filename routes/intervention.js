@@ -270,15 +270,22 @@ router.post("/heartbeat", verifyToken, async (req, res) => {
     }
 
     // [11/5] permissionFields(7주차) 대신 presence.permissionUpdate — 같은 규칙 + 그날 꺼진 시간을 기기별로 쌓는다
+    // [11/11] 앱이 보내는 설치 시각 · 서비스 시작 시각 (절전 보정용). 이상한 값은 무시
+    const { installedAt, aliveSince } = req.body;
+    const inst = typeof installedAt === "number" && installedAt > 0 && installedAt <= now + 5 * 60 * 1000 ? installedAt : null;
     const data = {
       lastSeenAt: now,
       ...presence.permissionUpdate(doc.data(), permissionsOk, now),
     };
+    if (inst !== null) data.installedAt = inst;
+    if (typeof aliveSince === "number" && aliveSince > 0) data.aliveSince = aliveSince;
     await ref.update(data);
     res.json({ status: "ok", serverTime: now });
 
     // [11/5] "살아 있다" 신호 — 신호 공백 3시간 판정용 (응답 뒤, 실패해도 무시)
-    presence.noteAlive(req.userId, now).catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
+    presence
+      .noteAlive(req.userId, now, inst ?? doc.data().installedAt ?? null)
+      .catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
   } catch (err) {
     logger.error(`heartbeat 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });

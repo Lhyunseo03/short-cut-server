@@ -219,6 +219,9 @@ router.post("/groups", verifyToken, async (req, res) => {
       lastScrollAt: null,
       countsUpdatedAt: now,
       lastSeenAt: now,
+      // [11/11] 만든 사람도 첫 주는 대기 (POINTS_API.md §6) — 첫 주는 전원 연습 주간,
+      // 첫 월요일 00:05 에 다 같이 1,000점으로 시작. 안 그러면 첫 주에 혼자 벌금 내고 혼자 받고 혼자 1등
+      waitingWeek: points.weekKey(now),
     });
 
     // merge: true — users/{uid} 문서에는 blockUntil · lastShownMilestone 등이 이미 있다.
