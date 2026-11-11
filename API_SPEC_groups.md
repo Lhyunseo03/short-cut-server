@@ -397,3 +397,13 @@ data message: `{ type, groupId, groupName, title, body, sentAt, ...extra }` — 
 | 응답 | `GET /groups` 각 그룹 `myPoints`(대기면 **키 있고 null**) · `GET /groups/{gid}` `pot` `lastWeek` `weekStart` · 멤버 행 `points` `waiting` `eligible` `ineligibleReasons` · `/status` 에 `pot` |
 | 그룹원 통계 | `GET /groups/{gid}/members/{uid}/daily?date=YYYY-MM-DD` (개인 /stats daily 모양 + 그날 그룹 한도 + `alerts[{type, stage, at, delta}]`) · `/monthly?date=YYYY-MM` (`days[{date, count, dailyLimit}]`). 예전 `/daily?month=` 는 지움 |
 | 이력 | `GET /groups/{gid}/points/history?days=7` |
+
+## 11. 계정 삭제 정리 (11/12, 11주차)
+
+### `DELETE /users/{uid}`  (본인만, 남의 uid 면 403) → 200 `{ status, leftGroups, devicesRemoved }`
+- 순서: ① 그 사람 `groupIds` 의 그룹 전부 탈퇴 (`DELETE /groups/{gid}/members/me` 와 같은 함수 — 마지막 1명이면 그룹 삭제 · 열린 투표 유권자/표에서 빼고 다 투표했으면 마감 · 남은 멤버에게 MEMBER_LEFT)
+  → ② 이 계정으로 **로그인 중인 다른 기기**에 FCM data `{ type: "ACCOUNT_DELETED", userId }` (지우는 기기는 앱이 먼저 `/logout` 해서 빠짐. `?deviceId=` 를 주면 그 기기도 뺌)
+  → ③ `users/{uid}/devices/*` · `users/{uid}` 삭제 → ④ 기존대로 userLogs · violations · limits · stats · Firebase Auth 삭제
+- 그룹 탈퇴가 하나라도 실패하면 500 (계정만 지워지고 유령 멤버가 남지 않게). 다시 부르면 남은 것부터 이어서 됨
+- 그 사람이 만든 초대 코드(invites)는 남겨 둠 — 24시간 뒤 만료, 그룹 가입엔 문제 없음
+- 앱은 지금처럼 탈퇴 전에 그룹을 먼저 나가도 됨 (이미 나간 그룹은 목록에 없어서 서버가 건너뜀)

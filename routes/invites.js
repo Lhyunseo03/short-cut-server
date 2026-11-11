@@ -325,6 +325,74 @@ router.post("/groups/join", verifyToken, async (req, res) => {
 // 자기 자신만 뺄 수 있다. 남을 내보내는 기능은 없다 (관리자가 없으므로 — G9).
 // 마지막 한 명이 나가면 그룹 문서도 지운다. 안 그러면 아무도 못 들어가는
 // 빈 그룹이 영원히 남는다(초대를 만들려면 멤버여야 하므로).
+// [11/12] 탈퇴 본체를 함수로 뺐다 — 계정 삭제(DELETE /users)도 그룹마다 같은 규칙으로 탈퇴시킨다.
+// 반환: { status, body, groupName } (status 404 = 멤버 아님). 뒤처리(알림 · 투표 정리)도 여기서 한다.
+async function leaveGroup(userId, gid, { reason = "탈퇴" } = {}) {
+  const result = await db.runTransaction(async (tx) => {
+    const gRef = groupsRef().doc(gid);
+    const mRef = membersRef(gid).doc(userId);
+    const gSnap = await tx.get(gRef);
+    const mSnap = await tx.get(mRef);
+    const nameSnap = gSnap.exists ? gSnap.data().name : null;
+
+    if (!mSnap.exists) {
+      // 멤버가 아니어도 내 목록에는 남아 있을 수 있다 (예전 데이터) — 목록에서만 뺀다
+      tx.set(userRef(userId), { groupIds: admin.firestore.FieldValue.arrayRemove(gid) }, { merge: true });
+      return { status: 404, body: { error: "이 그룹의 멤버가 아닙니다" } };
+    }
+
+    const count = gSnap.exists ? (gSnap.data().memberCount ?? 1) : 1;
+    const left = Math.max(0, count - 1);
+
+    tx.delete(mRef);
+    if (gSnap.exists) {
+      if (left === 0)
+        tx.delete(gRef); // 마지막 한 명 → 그룹도 정리
+      else tx.update(gRef, { memberCount: left });
+    }
+
+    // 그룹이 사라졌든 아니든 내 목록에서는 뺀다
+    tx.set(
+      userRef(userId),
+      { groupIds: admin.firestore.FieldValue.arrayRemove(gid) },
+      { merge: true },
+    );
+
+    return {
+      status: 200,
+      body: {
+        status: "ok",
+        groupId: gid,
+        memberCount: left,
+        groupDeleted: left === 0,
+      },
+      groupName: nameSnap || "그룹",
+    };
+  });
+
+  if (result.status >= 400) return result;
+
+  logger.info(
+    `그룹 ${reason} — gid: ${gid}, user: ${userId}` +
+      (result.body.groupDeleted ? " (마지막 멤버 — 그룹 삭제)" : ""),
+  );
+
+  // [7~9주차] 남은 사람이 있을 때만 — 알림(G10) + 열린 투표에서 이 사람 표·분모 빼기(G9)
+  if (!result.body.groupDeleted) {
+    groupStats.invalidate(gid);
+    const name = await resolveDisplayName(userId);
+    pushToGroup(gid, userId, {
+      type: "MEMBER_LEFT",
+      groupName: result.groupName,
+      title: result.groupName,
+      body: `${name} 님이 나갔어요 (${result.body.memberCount}명)`,
+      extra: { userId },
+    });
+    await onMemberLeft(gid, userId);
+  }
+  return result;
+}
+
 router.delete("/groups/:gid/members/me", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
@@ -334,69 +402,8 @@ router.delete("/groups/:gid/members/me", verifyToken, async (req, res) => {
       return res.status(400).json({ error: "groupId 가 잘못되었습니다" });
     }
 
-    const result = await db.runTransaction(async (tx) => {
-      const gRef = groupsRef().doc(gid);
-      const mRef = membersRef(gid).doc(userId);
-      const gSnap = await tx.get(gRef);
-      const mSnap = await tx.get(mRef);
-      const nameSnap = gSnap.exists ? gSnap.data().name : null;
-
-      if (!mSnap.exists) {
-        return { status: 404, body: { error: "이 그룹의 멤버가 아닙니다" } };
-      }
-
-      const count = gSnap.exists ? (gSnap.data().memberCount ?? 1) : 1;
-      const left = Math.max(0, count - 1);
-
-      tx.delete(mRef);
-      if (gSnap.exists) {
-        if (left === 0)
-          tx.delete(gRef); // 마지막 한 명 → 그룹도 정리
-        else tx.update(gRef, { memberCount: left });
-      }
-
-      // 그룹이 사라졌든 아니든 내 목록에서는 뺀다
-      tx.set(
-        userRef(userId),
-        { groupIds: admin.firestore.FieldValue.arrayRemove(gid) },
-        { merge: true },
-      );
-
-      return {
-        status: 200,
-        body: {
-          status: "ok",
-          groupId: gid,
-          memberCount: left,
-          groupDeleted: left === 0,
-        },
-        groupName: nameSnap || "그룹",
-      };
-    });
-
-    if (result.status >= 400) {
-      return res.status(result.status).json(result.body);
-    }
-
-    logger.info(
-      `그룹 탈퇴 — gid: ${gid}, user: ${userId}` +
-        (result.body.groupDeleted ? " (마지막 멤버 — 그룹 삭제)" : ""),
-    );
-    res.json(result.body);
-
-    // [7~9주차] 남은 사람이 있을 때만 — 알림(G10) + 열린 투표에서 이 사람 표·분모 빼기(G9)
-    if (!result.body.groupDeleted) {
-      groupStats.invalidate(gid);
-      const name = await resolveDisplayName(userId);
-      pushToGroup(gid, userId, {
-        type: "MEMBER_LEFT",
-        groupName: result.groupName,
-        title: result.groupName,
-        body: `${name} 님이 나갔어요 (${result.body.memberCount}명)`,
-        extra: { userId },
-      });
-      onMemberLeft(gid, userId);
-    }
+    const result = await leaveGroup(userId, gid);
+    res.status(result.status).json(result.body);
   } catch (err) {
     logger.error(`그룹 탈퇴 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -505,4 +512,4 @@ router.get("/invite/:code", async (req, res) => {
   }
 });
 
-module.exports = { router, INVITE_TTL_MS, CODE_RE, normalizeCode };
+module.exports = { router, INVITE_TTL_MS, CODE_RE, normalizeCode, leaveGroup };

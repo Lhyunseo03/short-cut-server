@@ -66,7 +66,7 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 });
 
 // ── 조회 API ───────────────────────────────────────────────
-const { db } = require("./utils/firebase");
+const { db, admin } = require("./utils/firebase");
 // Firebase Auth 토큰 검증 미들웨어 import
 const { verifyToken, verifySelf } = require("./middleware/auth");
 // [6주차] 한도 예약 — 읽을 때 승격 (utils/limits.js)
@@ -878,6 +878,54 @@ app.delete("/users/:userId", verifyToken, async (req, res) => {
       return res.status(403).json({ error: "본인 계정만 탈퇴할 수 있습니다" });
     }
 
+    // [11/12] 그룹 · 기기 · 사용자 문서 정리 (3차 보고서 계획, 11주차)
+    //   앱도 탈퇴 전에 그룹을 나가지만, 옛 앱이거나 중간에 실패하면 그룹에 유령 멤버가 남는다
+    //   (투표 분모에 계속 끼고, 마지막 멤버면 그룹이 안 사라짐). 서버가 한 번 더 확실히 정리한다.
+    //   순서: ① 그룹 전부 탈퇴 → ② 다른 기기에 ACCOUNT_DELETED (Auth 삭제 전, 토큰이 아직 있을 때)
+    //         → ③ 기기 · 사용자 문서 삭제 → 아래 기존 삭제(기록 · 한도 · 통계 · Auth)
+    //   중간에 실패해도 다시 부르면 이어서 된다 (이미 나간 그룹은 목록에 없음).
+    const { leaveGroup } = require("./routes/invites");
+    const uRef = db.collection("users").doc(userId);
+    const uSnap = await uRef.get();
+    const groupIds = (uSnap.exists ? uSnap.data().groupIds : null) || [];
+    let leftGroups = 0;
+    for (const gid of groupIds) {
+      try {
+        const r = await leaveGroup(userId, gid, { reason: "탈퇴(계정 삭제)" });
+        if (r.status === 200) leftGroups++;
+      } catch (e) {
+        logger.warn(`계정 삭제 중 그룹 탈퇴 실패 — gid: ${gid}, ${e.message}`);
+        throw e; // 그룹이 남은 채로 계정만 지우지 않는다 → 500, 앱이 다시 시도
+      }
+    }
+    logger.info(`계정 삭제 — 그룹 ${leftGroups}개 탈퇴 (목록 ${groupIds.length}개) — userId: ${userId}`);
+
+    // ② 이 계정으로 로그인돼 있는 **다른** 기기에 알림 → 앱이 바로 로컬 로그아웃 (AccountWatch)
+    //    지우는 기기는 앱이 먼저 /logout 을 불러 loggedOutAt 이 있어서 빠진다. deviceId 를 주면 그것도 뺀다.
+    const devSnap = await uRef.collection("devices").get();
+    const exceptDevice = req.query.deviceId || (req.body && req.body.deviceId) || null;
+    const targets = devSnap.docs.filter((d) => {
+      const x = d.data();
+      return x.fcmToken && !x.loggedOutAt && d.id !== exceptDevice;
+    });
+    if (targets.length > 0) {
+      try {
+        const resp = await admin.messaging().sendEachForMulticast({
+          tokens: targets.map((d) => d.data().fcmToken),
+          data: { type: "ACCOUNT_DELETED", userId, sentAt: String(Date.now()) },
+          android: { priority: "high" },
+        });
+        logger.info(`ACCOUNT_DELETED 발송 — userId: ${userId}, 기기 ${targets.length}대, 성공 ${resp.successCount} / 실패 ${resp.failureCount}`);
+      } catch (e) {
+        logger.warn(`ACCOUNT_DELETED 발송 실패(계속 진행) — ${e.message}`); // 앱은 다음에 켤 때 계정 확인으로도 잡는다
+      }
+    }
+
+    // ③ 기기 목록 · 사용자 문서 (nickname · blockUntil · groupIds · 포인트 수상 제외 기록 등)
+    await Promise.all(devSnap.docs.map((d) => d.ref.delete()));
+    await uRef.delete();
+    logger.info(`기기 ${devSnap.size}대 · 사용자 문서 삭제 완료 — userId: ${userId}`);
+
     // Firestore — userLogs 컬렉션에서 해당 유저 문서 전체 삭제
     // 스크롤 통계 데이터 삭제
     const userLogsSnapshot = await db
@@ -918,12 +966,11 @@ app.delete("/users/:userId", verifyToken, async (req, res) => {
 
     // Firebase Auth — 계정 삭제
     // 삭제 후 해당 계정으로 로그인 불가능
-    const { admin } = require("./utils/firebase");
     await admin.auth().deleteUser(userId);
     logger.info(`Firebase Auth 계정 삭제 완료 — userId: ${userId}`);
 
     logger.success(`회원 탈퇴 완료 — userId: ${userId}`);
-    res.json({ status: "ok" });
+    res.json({ status: "ok", leftGroups, devicesRemoved: devSnap.size });
   } catch (err) {
     logger.error(`회원 탈퇴 실패 — ${err.message}`);
     res.status(500).json({ error: err.message });
