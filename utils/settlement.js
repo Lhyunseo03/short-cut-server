@@ -71,6 +71,15 @@ async function settleDay(gid, D, now = Date.now()) {
     }),
   );
   const candidates = info.filter((x) => x.eligible);
+  // [11/11] 왜 수상자가 없는지 Railway 로그로 볼 수 있게 — 멤버마다 스크롤 · 제외 이유 한 줄로
+  if (members.length > 0) {
+    const waitingIds = members.filter((m) => points.isWaiting(m, wk)).map((m) => m.userId.slice(0, 6));
+    logger.info(
+      `정산 후보 — gid: ${gid}, ${D}, ` +
+        (info.map((x) => `${x.userId.slice(0, 6)} ${x.scrolls}회 ${x.eligible ? "후보" : `제외(${x.reasons.join("·")})`}`).join(", ") || "참가자 없음") +
+        (waitingIds.length ? ` / 대기 ${waitingIds.join(", ")}` : ""),
+    );
+  }
   const minScroll = candidates.length ? Math.min(...candidates.map((c) => c.scrolls)) : null;
   const winnerIds = candidates.filter((c) => c.scrolls === minScroll).map((c) => c.userId);
 
