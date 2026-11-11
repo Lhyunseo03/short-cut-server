@@ -62,12 +62,11 @@ async function liveCounts(userId, now) {
 //   lastSeenAt    기기들 중 가장 최근 신호 (heartbeat · sync · register)
 //   permissionsOk 로그인 중인 기기 중 하나라도 false 면 false, 전부 true 면 true, 모르면 null
 //   loggedOut     기기가 있고 전부 로그아웃이면 true
-async function deviceSummary(userId) {
-  const snap = await db
-    .collection("users")
-    .doc(userId)
-    .collection("devices")
-    .get();
+async function deviceSummary(userId, snapIn = null) {
+  // [11/12] 이미 읽은 기기 목록이 있으면 그걸 쓴다 (그룹 현황에서 수상 판정과 같이 쓰려고)
+  const snap =
+    snapIn ||
+    (await db.collection("users").doc(userId).collection("devices").get());
   const devices = [];
   snap.forEach((doc) => {
     const d = doc.data();
@@ -113,42 +112,63 @@ function maxOrNull(a, b) {
 // 그룹 구성원 전부의 숫자. 15초 캐시.
 //   members: [{ userId, displayName, joinedAt }]  (이름은 호출하는 쪽에서 합쳐 넘긴다)
 const cache = new Map(); // gid → { at, key, rows }
+// [11/12 부하 테스트] 캐시가 비었을 때 10명이 동시에 부르면 10명 다 따로 계산했다 (10배 읽기 → 3~4초).
+//   같은 그룹 · 같은 멤버 계산이 이미 돌고 있으면 그 결과를 같이 기다린다.
+const inflight = new Map(); // gid → { key, promise }
 async function memberRows(gid, members, now = Date.now()) {
   const key = members
     .map((m) => m.userId)
     .sort()
     .join(",");
+  const byId = new Map(members.map((m) => [m.userId, m]));
   const hit = cache.get(gid);
+  let raw;
   if (hit && hit.key === key && now - hit.at < CACHE_TTL_MS) {
-    // 캐시는 숫자만 재사용한다. 이름은 매번 지금 값으로 — 닉네임을 바꾸면 15초 기다리지 않고 바로 보이게
-    const byId = new Map(members.map((m) => [m.userId, m]));
-    return hit.rows.map((r) =>
-      withPoints(
-        {
-          ...r,
-          displayName: byId.get(r.userId).displayName,
-          nickname: byId.get(r.userId).displayName,
-          joinedAt: byId.get(r.userId).joinedAt ?? null,
-        },
-        byId.get(r.userId),
-        now,
-      ),
-    );
+    raw = hit.rows;
+  } else {
+    const run = inflight.get(gid);
+    if (run && run.key === key) {
+      raw = await run.promise;
+    } else {
+      const promise = computeRows(members, now);
+      inflight.set(gid, { key, promise });
+      try {
+        raw = await promise;
+        cache.set(gid, { at: now, key, rows: raw });
+      } finally {
+        if (inflight.get(gid)?.promise === promise) inflight.delete(gid);
+      }
+    }
   }
+  // 캐시는 숫자만 재사용한다. 이름 · 점수는 매번 지금 값으로 — 닉네임을 바꾸면 15초 기다리지 않고 바로 보이게
+  return raw.map((r) =>
+    withPoints(
+      {
+        ...r,
+        displayName: byId.get(r.userId).displayName,
+        nickname: byId.get(r.userId).displayName,
+        joinedAt: byId.get(r.userId).joinedAt ?? null,
+      },
+      byId.get(r.userId),
+      now,
+    ),
+  );
+}
 
-  const ids = members.map((m) => m.userId);
-  const userDocs = ids.length
-    ? await db.getAll(...ids.map((u) => db.collection("users").doc(u)))
-    : [];
-
-  const rows = await Promise.all(
-    members.map(async (m, i) => {
-      const [c, dv, el] = await Promise.all([
+async function computeRows(members, now) {
+  const date = toKSTDateString(now);
+  return Promise.all(
+    members.map(async (m) => {
+      // 멤버마다 읽기 3개를 한꺼번에: 오늘 기록 · 사용자 문서 · 기기 목록 (예전엔 사용자 문서 · 기기 목록을 두 번씩 읽었다)
+      const uRef = db.collection("users").doc(m.userId);
+      const [c, uSnap, devSnap] = await Promise.all([
         liveCounts(m.userId, now),
-        deviceSummary(m.userId),
-        presence.eligibility(m.userId, toKSTDateString(now), now),
+        uRef.get(),
+        uRef.collection("devices").get(),
       ]);
-      const u = userDocs[i] && userDocs[i].exists ? userDocs[i].data() : {};
+      const u = uSnap.exists ? uSnap.data() : {};
+      const dv = await deviceSummary(m.userId, devSnap);
+      const el = presence.eligibilityFrom(u, devSnap.docs.map((d) => d.data()), date, now);
       return {
         userId: m.userId,
         displayName: m.displayName,
@@ -169,14 +189,12 @@ async function memberRows(gid, members, now = Date.now()) {
       };
     }),
   );
-  cache.set(gid, { at: now, key, rows });
-  const byId = new Map(members.map((m) => [m.userId, m]));
-  return rows.map((r) => withPoints(r, byId.get(r.userId), now));
 }
 
 // 테스트·탈퇴 직후 등에서 캐시를 비울 때
 function invalidate(gid) {
   cache.delete(gid);
+  inflight.delete(gid);
 }
 
 // 한 사람의 오늘 팝업 수 (violations = 팝업에 답한 기록)

@@ -300,10 +300,13 @@ async function loadGroupAsMember(gid, userId) {
   if (typeof gid !== "string" || gid.length === 0 || gid.length > 128) {
     return { status: 400, error: "groupId 가 잘못되었습니다" };
   }
-  const raw = await groupsRef().doc(gid).get();
+  // [11/12] 그룹 문서와 내 멤버 문서를 동시에 읽는다 (차례로 읽으면 왕복이 두 번)
+  const [raw, meDoc] = await Promise.all([
+    groupsRef().doc(gid).get(),
+    membersRef(gid).doc(userId).get(),
+  ]);
   if (!raw.exists) return { status: 404, error: "존재하지 않는 그룹입니다" };
   // 멤버 여부 확인 — 관리자 개념이 없으므로 검사는 이것 하나뿐
-  const meDoc = await membersRef(gid).doc(userId).get();
   if (!meDoc.exists) return { status: 403, error: "이 그룹의 멤버가 아닙니다" };
   const gDoc = await freshGroupDoc(raw); // 9주차: 월요일 적용이 지났으면 반영
   return { gDoc };
@@ -355,21 +358,22 @@ router.get("/groups/:gid", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
     const { gid } = req.params;
-    const g = await loadGroupAsMember(gid, userId);
-    if (g.error) return res.status(g.status).json({ error: g.error });
-
     const now = Date.now();
-    const members = await namedMembers(gid);
-    const rows = await groupStats.memberRows(gid, members, now);
-
-    const pot = await points.potToday(gid, now);
+    // [11/12] 멤버 확인 · 멤버 목록 · 벌금통을 동시에 읽는다. 멤버가 아니면 읽은 건 버리고 403
+    const [g, members, pot] = await Promise.all([
+      loadGroupAsMember(gid, userId),
+      namedMembers(gid).catch(() => null),
+      points.potToday(gid, now).catch(() => null),
+    ]);
+    if (g.error) return res.status(g.status).json({ error: g.error });
+    const rows = await groupStats.memberRows(gid, members || (await namedMembers(gid)), now);
     const lw = g.gDoc.data().lastWeek;
     res.json({
       group: toGroupSummary(g.gDoc),
       memberCount: rows.length,
       members: withIsMe(rows, userId),
       // [11/5] 포인트 — 오늘 벌금통 · 지난주 결과 · 이번 주 월요일
-      pot,
+      pot: pot || (await points.potToday(gid, now)),
       lastWeek: lw ? { weekStart: lw.weekStart, ranking: lw.ranking || [] } : null,
       weekStart: points.weekKey(now),
       serverTime: now,
@@ -389,12 +393,15 @@ router.get("/groups/:gid/status", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
     const { gid } = req.params;
-    const g = await loadGroupAsMember(gid, userId);
-    if (g.error) return res.status(g.status).json({ error: g.error });
-
     const now = Date.now();
-    const members = await namedMembers(gid);
-    const rows = await groupStats.memberRows(gid, members, now);
+    // [11/12 부하 테스트] 멤버 확인 · 멤버 목록 · 벌금통을 동시에 읽는다. 멤버가 아니면 읽은 건 버리고 403
+    const [g, members, pot] = await Promise.all([
+      loadGroupAsMember(gid, userId),
+      namedMembers(gid).catch(() => null),
+      points.potToday(gid, now).catch(() => null),
+    ]);
+    if (g.error) return res.status(g.status).json({ error: g.error });
+    const rows = await groupStats.memberRows(gid, members || (await namedMembers(gid)), now);
     const goal = g.gDoc.data().goal || null;
 
     res.json({
@@ -402,7 +409,7 @@ router.get("/groups/:gid/status", verifyToken, async (req, res) => {
       goal, // 앱이 빨강/초록(일간) · 종(시간당) 판단에 쓴다
       date: toKSTDateString(now),
       members: withIsMe(rows, userId),
-      pot: await points.potToday(gid, now), // [11/5] 홈 벌금통 30초 갱신 (POINTS_API.md §8 질문 1)
+      pot: pot || (await points.potToday(gid, now)), // [11/5] 홈 벌금통 30초 갱신 (POINTS_API.md §8 질문 1)
       weekStart: points.weekKey(now),
       serverTime: now,
     });

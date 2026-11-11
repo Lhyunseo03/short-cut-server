@@ -142,14 +142,19 @@ async function eligibility(userId, date, now = Date.now()) {
     db.collection("users").doc(userId).get(),
     db.collection("users").doc(userId).collection("devices").get(),
   ]);
-  const u = uSnap.exists ? uSnap.data() : {};
+  return eligibilityFrom(uSnap.exists ? uSnap.data() : {}, devSnap.docs.map((d) => d.data()), date, now);
+}
+
+// [11/12] 사용자 문서 · 기기 목록을 이미 읽었으면 다시 안 읽고 판정 (그룹 현황 계산용)
+function eligibilityFrom(userData, devices, date, now = Date.now()) {
+  const u = userData || {};
   const reasons = [];
   if ((u.logoutDays || {})[date]) reasons.push("logout");
-  devSnap.forEach((doc) => {
-    if (permOffMsOnDate(doc.data(), date, now) >= PERM_OFF_LIMIT_MS) {
+  for (const d of devices || []) {
+    if (permOffMsOnDate(d, date, now) >= PERM_OFF_LIMIT_MS) {
       if (!reasons.includes("permissions")) reasons.push("permissions");
     }
-  });
+  }
   if (gapMsOnDate(u, date, now) >= GAP_LIMIT_MS) reasons.push("gap");
   return { eligible: reasons.length === 0, reasons };
 }
@@ -161,6 +166,7 @@ module.exports = {
   permOffMsOnDate,
   gapMsOnDate,
   eligibility,
+  eligibilityFrom,
   splitByDay,
   PERM_OFF_LIMIT_MS,
   GAP_LIMIT_MS,
