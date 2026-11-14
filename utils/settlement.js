@@ -76,7 +76,7 @@ async function settleDay(gid, D, now = Date.now()) {
     const waitingIds = members.filter((m) => points.isWaiting(m, wk)).map((m) => m.userId.slice(0, 6));
     logger.info(
       `정산 후보 — gid: ${gid}, ${D}, ` +
-        (info.map((x) => `${x.userId.slice(0, 6)} ${x.scrolls}회 ${x.eligible ? "후보" : `제외(${x.reasons.join("·")})`}`).join(", ") || "참가자 없음") +
+        (info.map((x) => `${x.userId.slice(0, 6)} ${x.scrolls}회 ${x.eligible ? "후보" : `제외(${x.reasons.map((r) => (r === "gap" ? `gap ${(x.gapMs / 3600000).toFixed(1)}h` : r)).join("·")})`}`).join(", ") || "참가자 없음") +
         (waitingIds.length ? ` / 대기 ${waitingIds.join(", ")}` : ""),
     );
   }

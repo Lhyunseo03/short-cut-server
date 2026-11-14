@@ -52,31 +52,38 @@ function addToDayMap(map, add, now) {
 // ─────────────────────────────────────────────────────────────
 // ③ 신호 — heartbeat · sync · register 가 부른다. 실패해도 본 요청엔 영향 없게 호출부에서 catch.
 // ─────────────────────────────────────────────────────────────
-// installedAt: 신호를 보낸 기기의 앱 최초 설치 시각(ms). heartbeat 가 보내고, sync · 등록은 기기 문서에 저장된 값을 넘긴다.
-// [11/11 절전 보정, POINTS_API.md §4-1] 직전 신호 시각 ≥ installedAt 이면 그 사이에 앱을 지웠다 깐 게 아니다
-//   → 공백으로 치지 않는다. 밤에 Doze 로 heartbeat 가 몇 시간 밀려도 제외되지 않게.
-//   폰이 꺼져 있거나 절전이면 어차피 스크롤도 못 한다.
-//   잡히는 것: 지우고 다시 깔기(installedAt 이 직전 신호보다 뒤) · 지우고 안 깔기(신호가 다시 안 옴 → 마지막 신호 뒤 전부 공백)
-async function noteAlive(userId, now = Date.now(), installedAt = null) {
+// [11/14 정산 수정] "공백" = 그 사이에 앱을 지웠다 깔았을 때만 센다.
+//   ① 처음 보는 기기(newDevice)에서 온 신호 — 앱을 지웠다 깔면(또는 앱 데이터 삭제) deviceId 가 새로 생긴다
+//   ② 기기가 보낸 앱 설치 시각(installedAt)이 직전 신호보다 뒤 — 백업 복원으로 deviceId 가 그대로여도 잡힌다 (11/6 규칙)
+//   그 밖의 신호 끊김(밤 절전 · 폰 꺼짐 · 오래 오프라인)은 공백이 아니다 — 그동안은 어차피 스크롤도 못 한다.
+//   11/9~11/12 정산에서 전원이 "공백"으로 빠진 원인: 밤 절전으로 신호가 몇 시간씩 끊기는 걸 전부 공백으로 셌다.
+//   (11/11 의 installedAt 보정은 설치 시각을 보내는 최신 앱에만 먹었다 → 옛 앱 사용자는 계속 빠짐)
+// opts: { installedAt: 그 기기의 설치 시각(모르면 null), newDevice: 이번 신호가 새 기기 등록인가 }
+async function noteAlive(userId, now = Date.now(), opts = {}) {
+  const { installedAt = null, newDevice = false } = opts || {};
   const ref = db.collection("users").doc(userId);
   const snap = await ref.get();
   const u = snap.exists ? snap.data() : {};
   const last = typeof u.aliveAt === "number" ? u.aliveAt : null;
   const update = { aliveAt: now };
-  const sameInstall = typeof installedAt === "number" && installedAt > 0 && last !== null && last >= installedAt;
-  if (last !== null && now - last > ALIVE_GRACE_MS && !sameInstall) {
+  const reinstalled =
+    newDevice || (typeof installedAt === "number" && installedAt > 0 && last !== null && last < installedAt);
+  if (last !== null && now - last > ALIVE_GRACE_MS && reinstalled) {
     update.gapMs = addToDayMap(u.gapMs, splitByDay(last + ALIVE_GRACE_MS, now), now);
   }
   await ref.set(update, { merge: true });
 }
 
-// 그날 공백 ms — 저장된 것 + (지금도 끊겨 있으면) 마지막 신호 뒤 그날 안쪽
+// 그날 공백 ms — 저장된 것(재설치로 생긴 공백) + 아직 신호가 끊겨 있는 구간
+// [11/14] 아직 끊겨 있는 구간은 **그날 신호가 한 번도 없었을 때만** 센다 (= 하루 종일 공백).
+//   그날 신호가 있었으면 마지막 신호 뒤는 봐준다 — 저녁에 폰을 두고 자면 00:05 정산 때까지 신호가 없어서
+//   전원이 빠지던 문제. 앱을 지우고 다시 안 깔면 다음 날은 신호가 0 이라 하루 전체 공백 → 그날부터 제외.
 function gapMsOnDate(userData, date, now) {
   const u = userData || {};
   // 신호가 한 번도 없었던 사람 (배포 뒤 앱을 한 번도 안 켬 · 이미 지운 사람) — 하루 전체를 공백으로
   if (typeof u.aliveAt !== "number") return DAY_MS;
   let ms = (u.gapMs || {})[date] || 0;
-  if (typeof u.aliveAt === "number") {
+  if (u.aliveAt < startOfKSTDay(date)) {
     const from = u.aliveAt + ALIVE_GRACE_MS;
     if (now > from) ms += overlapWithDay(from, now, date);
   }
@@ -155,8 +162,9 @@ function eligibilityFrom(userData, devices, date, now = Date.now()) {
       if (!reasons.includes("permissions")) reasons.push("permissions");
     }
   }
-  if (gapMsOnDate(u, date, now) >= GAP_LIMIT_MS) reasons.push("gap");
-  return { eligible: reasons.length === 0, reasons };
+  const gapMs = gapMsOnDate(u, date, now);
+  if (gapMs >= GAP_LIMIT_MS) reasons.push("gap");
+  return { eligible: reasons.length === 0, reasons, gapMs }; // gapMs: 정산 로그에 몇 시간이었는지 찍으려고
 }
 
 module.exports = {

@@ -391,7 +391,7 @@ data message: `{ type, groupId, groupName, title, body, sentAt, ...extra }` — 
 | 벌금 | `POST /groups/{gid}/alerts { alertId, type, count, stage, at }` → `{ points, delta, sent, reason? }`. reason = below-limit · duplicate(같은 alertId) · duplicate-stage(같은 사람·종류·단계가 시간당 60분 안 / 일간 같은 날) · waiting |
 | 벌금통 | `groups/{gid}/potDays/{date} { fines, carriedIn, settled, winners, carriedOut }`. 날짜는 `at` 기준, 이미 정산된 날이면 다음 날로 |
 | 정산 | 1분 타이머(proposals sweeper)가 `D+1 00:05` 지난 날 D 를 그룹마다 차례로 — 놓친 날도 따라잡음. 그룹 전체 훑기는 정산할 날이 바뀔 때만(하루 1번) |
-| 수상 제외 | 그날 ① `users/{uid}.logoutDays` ② 기기 하나라도 `permOffMs` ≥ 30분 ③ `users/{uid}.gapMs` ≥ 3시간 (신호 = heartbeat · /sync · 등록, 15분까지는 공백 아님. 신호가 한 번도 없던 사람은 하루 전체 공백. **11/11 절전 보정:** 직전 신호 시각 ≥ 기기 `installedAt`(heartbeat 가 보냄, 기기 문서에 저장) 이면 그 사이는 공백 아님). 상수: `utils/presence.js` |
+| 수상 제외 | 그날 ① `users/{uid}.logoutDays` ② 기기 하나라도 `permOffMs` ≥ 30분 ③ 공백 ≥ 3시간. **11/14 공백 규칙:** 신호(heartbeat · /sync · 등록)가 끊긴 시간은 **그 사이에 앱을 지웠다 깐 경우만** 공백 — 처음 보는 deviceId 로 등록됐거나, 기기 `installedAt` 이 직전 신호보다 뒤. 밤 절전·폰 꺼짐은 공백 아님. 아직 신호가 끊겨 있는 구간은 **그날 신호가 한 번도 없었을 때만** 공백(= 하루 전체). 상수: `utils/presence.js`. (11/9~11/12 정산 전원 제외 → 11/13 부터 최신 앱 사용자 수상) |
 | 주간 마감 | 일요일 정산 때 같이 — 이월분 버림, `groups/{gid}.lastWeek { weekStart, ranking[{userId, nickname, points, streak?}] }` (동점은 그 주 스크롤 합 적은 순), FCM `WEEK_RESULT` (myRank · myPoints) |
 | 지급 | FCM `POINTS_AWARDED` (delta) — 수상자에게만 |
 | 응답 | `GET /groups` 각 그룹 `myPoints`(대기면 **키 있고 null**) · `GET /groups/{gid}` `pot` `lastWeek` `weekStart` · 멤버 행 `points` `waiting` `eligible` `ineligibleReasons` · `/status` 에 `pot` |

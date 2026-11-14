@@ -184,7 +184,7 @@ router.get("/sync", verifyToken, async (req, res) => {
         if (!doc.exists) return;
         // [11/11] 이 기기의 설치 시각(heartbeat 가 저장)으로 절전 보정 — 아침 첫 신호가 /sync 여도 밤사이를 공백으로 안 친다
         presence
-          .noteAlive(userId, now, doc.data().installedAt ?? null)
+          .noteAlive(userId, now, { installedAt: doc.data().installedAt ?? null })
           .catch((err) => logger.warn(`aliveAt 갱신 실패 — ${err.message}`));
         return doc.ref.update({ lastSyncAt: now, lastSeenAt: now });
       })

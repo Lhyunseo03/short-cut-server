@@ -128,7 +128,7 @@ router.post("/devices/register", verifyToken, async (req, res) => {
     await ref.set(data, { merge: true });
     // [11/5] 등록도 "살아 있다" 신호
     presence
-      .noteAlive(userId, now, prev.exists ? (prev.data().installedAt ?? null) : null)
+      .noteAlive(userId, now, { installedAt: prev.exists ? (prev.data().installedAt ?? null) : null, newDevice: !prev.exists })
       .catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
 
     // 닉네임은 기기가 아니라 사용자 것이므로 users/{uid} 에 저장한다.

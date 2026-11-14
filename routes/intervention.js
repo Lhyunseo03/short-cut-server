@@ -284,7 +284,7 @@ router.post("/heartbeat", verifyToken, async (req, res) => {
 
     // [11/5] "살아 있다" 신호 — 신호 공백 3시간 판정용 (응답 뒤, 실패해도 무시)
     presence
-      .noteAlive(req.userId, now, inst ?? doc.data().installedAt ?? null)
+      .noteAlive(req.userId, now, { installedAt: inst ?? doc.data().installedAt ?? null })
       .catch((e) => logger.warn(`aliveAt 갱신 실패 — ${e.message}`));
   } catch (err) {
     logger.error(`heartbeat 실패 — ${err.message}`);
